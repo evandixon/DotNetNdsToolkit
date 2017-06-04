@@ -254,3 +254,4 @@ paket-files/
 .idea/
 *.sln.iml
 /ToolkitConsole/Properties/launchSettings.json
+/NdsToolkitConsole/Properties/launchSettings.json
