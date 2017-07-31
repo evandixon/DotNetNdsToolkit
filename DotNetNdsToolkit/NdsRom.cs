@@ -15,7 +15,7 @@ namespace DotNetNdsToolkit
     /// <summary>
     /// A ROM for the Nintendo DS
     /// </summary>
-    public class NdsRom : GenericFile, IReportProgress, IIOProvider, IDisposable
+    public class NdsRom : GenericFile, IReportProgress, IIOProvider, IDisposable, IDetectableFileType
     {
 
         #region Static Methods
@@ -744,6 +744,11 @@ namespace DotNetNdsToolkit
             }
         }
 
+        public async Task<bool> IsOfType(GenericFile file)
+        {
+            return file.Length > 0x15D && await file.ReadAsync(0x15C) == 0x56 && await file.ReadAsync(0x15D) == 0xCF;
+        }
+
         /// <summary>
         /// Calculates the padding size of a file
         /// </summary>
@@ -1048,7 +1053,7 @@ namespace DotNetNdsToolkit
         }
 
         #region Properties
-        private NdsHeader Header { get; set; }
+        public NdsHeader Header { get; set; }
 
         private List<OverlayTableEntry> Arm9OverlayTable { get; set; }
 
@@ -2043,7 +2048,7 @@ namespace DotNetNdsToolkit
                 CurrentIOProvider.DeleteDirectory(VirtualPath);
                 VirtualPath = null;
             }
-        }
+        }        
         #endregion
     }
 }
