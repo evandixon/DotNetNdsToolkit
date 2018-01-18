@@ -755,6 +755,7 @@ namespace DotNetNdsToolkit
         {
             base.CreateFile(rawData);
             this.CurrentIOProvider = new MemoryIOProvider();
+            VirtualPath = "/";
             await LoadRomHeader();
         }
 
