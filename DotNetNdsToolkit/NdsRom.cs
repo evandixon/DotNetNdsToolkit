@@ -1438,7 +1438,7 @@ namespace DotNetNdsToolkit
         /// <summary>
         /// A percentage representing the progress of the current extraction operation
         /// </summary>
-        public float Progress => ExtractedFileCount / TotalFileCount;
+        public float Progress => (float)ExtractedFileCount / TotalFileCount;
 
         /// <summary>
         /// A string representing what is being done in the current extraction operation

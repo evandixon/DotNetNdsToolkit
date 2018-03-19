@@ -3,6 +3,10 @@ using Microsoft.VisualStudio.TestTools.UnitTesting;
 using System.IO;
 using System.Threading.Tasks;
 using SkyEditor.Core.IO;
+using SkyEditor.Core.TestComponents;
+using SkyEditor.Core.Utilities;
+using System.Collections.Concurrent;
+using System.Linq;
 
 namespace DotNetNdsToolkit.Tests
 {
@@ -15,7 +19,8 @@ namespace DotNetNdsToolkit.Tests
         public const string BrtUsPath = @"Resources/brtu.nds";
         public const string BrtUsUnpackDir = @"RawFiles-BRTUS";
 
-        private IIOProvider Provider { get; set; }
+        private IIOProvider SourceProvider { get; set; }
+        private IIOProvider OutputProvider { get; set; }
 
         [TestInitialize]
         public void TestInit()
@@ -28,39 +33,73 @@ namespace DotNetNdsToolkit.Tests
             {
                 Assert.Fail("Missing test ROM: Pokémon Mystery Dungeon: Blue Rescue Team (US).  Place it at the following path: " + BrtUsPath);
             }
-            Provider = new PhysicalIOProvider();
+            SourceProvider = new PhysicalIOProvider();
+            OutputProvider = new MemoryIOProvider();
         }
 
         [TestMethod]
         [TestCategory(TestCategory)]
-        public async Task TestOpen_EosUs()
-        {
-            // This test will be replaced with something else later.
-            // Right now, it just ensures there's no exceptions
+        public async Task EosUs_UnpackReportsProgress()
+        {            
             using (var eosUS = new NdsRom())
             {
-                await eosUS.OpenFile(EosUsPath, Provider);
-                await eosUS.Unpack(EosUsUnpackDir, Provider);
+                // Arrange
+                var progressReports = new ConcurrentBag<ProgressReportedEventArgs>();
+
+                void onProgressed(object sender, ProgressReportedEventArgs e) {
+                    progressReports.Add(e);
+                }
+
+                eosUS.ProgressChanged += onProgressed;
+
+                await eosUS.OpenFile(EosUsPath, SourceProvider);
+
+                // Act
+                await eosUS.Unpack(EosUsUnpackDir, OutputProvider);
+
+                // Assert
+                // Make sure we have a reasonable distribution of percentages, and not all 0 or 1
+                Assert.AreEqual(progressReports.Count, progressReports.Select(x => x.Progress).Count(), 0, "Too many duplicate progress percentages detected.");
+
+                // Cleanup
+                eosUS.ProgressChanged -= onProgressed;
             }
 
             // Cleanup
-            Provider.DeleteDirectory(EosUsUnpackDir);
+            OutputProvider.DeleteDirectory(EosUsUnpackDir);
         }
 
         [TestMethod]
         [TestCategory(TestCategory)]
-        public async Task TestOpen_BrtUs()
+        public async Task BrtUs_UnpackReportsProgress()
         {
-            // This test will be replaced with something else later.
-            // Right now, it just ensures there's no exceptions
-            using (var eosUS = new NdsRom())
+            using (var brtUS = new NdsRom())
             {
-                await eosUS.OpenFile(BrtUsPath, Provider);
-                await eosUS.Unpack(BrtUsUnpackDir, Provider);
+                // Arrange
+                var progressReports = new ConcurrentBag<ProgressReportedEventArgs>();
+
+                void onProgressed(object sender, ProgressReportedEventArgs e)
+                {
+                    progressReports.Add(e);
+                }
+
+                brtUS.ProgressChanged += onProgressed;
+
+                await brtUS.OpenFile(BrtUsPath, SourceProvider);
+
+                // Act
+                await brtUS.Unpack(BrtUsUnpackDir, OutputProvider);
+
+                // Assert
+                // Make sure we have a reasonable distribution of percentages, and not all 0 or 1
+                Assert.AreEqual(progressReports.Count, progressReports.Select(x => x.Progress).Count(), 0, "Too many duplicate progress percentages detected.");
+
+                // Cleanup
+                brtUS.ProgressChanged -= onProgressed;
             }
 
             // Cleanup
-            Provider.DeleteDirectory(BrtUsUnpackDir);
+            OutputProvider.DeleteDirectory(BrtUsUnpackDir);
         }
 
         [TestMethod]
@@ -69,20 +108,20 @@ namespace DotNetNdsToolkit.Tests
         {
             using (var eosUS = new NdsRom())
             {
-                await eosUS.OpenFile(EosUsPath, Provider);
-                await eosUS.Unpack(EosUsUnpackDir, Provider);
-                await eosUS.Save("eos-repack.nds", Provider);
+                await eosUS.OpenFile(EosUsPath, SourceProvider);
+                await eosUS.Unpack(EosUsUnpackDir, OutputProvider);
+                await eosUS.Save("eos-repack.nds", OutputProvider);
 
                 using (var eosRepack = new NdsRom())
                 {
-                    await eosRepack.OpenFile("eos-repack.nds", Provider);
-                    await eosUS.Unpack(EosUsUnpackDir + "-Reunpack", Provider);
+                    await eosRepack.OpenFile("eos-repack.nds", OutputProvider);
+                    await eosUS.Unpack(EosUsUnpackDir + "-Reunpack", OutputProvider);
                 }
             }
 
             // Cleanup
-            Provider.DeleteFile("eos-repack.nds");
-            Provider.DeleteDirectory(EosUsUnpackDir + "-Reunpack");
+            OutputProvider.DeleteFile("eos-repack.nds");
+            OutputProvider.DeleteDirectory(EosUsUnpackDir + "-Reunpack");
         }
 
         [TestMethod]
@@ -91,12 +130,12 @@ namespace DotNetNdsToolkit.Tests
         {
             using (var eosUS = new NdsRom())
             {
-                await eosUS.OpenFile(BrtUsPath, Provider);
-                await eosUS.Save("brt-repack.nds", Provider);
+                await eosUS.OpenFile(BrtUsPath, SourceProvider);
+                await eosUS.Save("brt-repack.nds", OutputProvider);
             }
 
             // Cleanup
-            Provider.DeleteFile("eos-repack.nds");
+            OutputProvider.DeleteFile("eos-repack.nds");
         }
 
         [TestMethod]
@@ -105,7 +144,7 @@ namespace DotNetNdsToolkit.Tests
         {
             using (var eosUS = new NdsRom())
             {
-                await eosUS.OpenFile(EosUsPath, Provider);
+                await eosUS.OpenFile(EosUsPath, SourceProvider);
                 File.WriteAllText("analysis-eos.csv", eosUS.AnalyzeLayout().GenerateCSV());
             }
         }
@@ -116,7 +155,7 @@ namespace DotNetNdsToolkit.Tests
         {
             using (var brtUS = new NdsRom())
             {
-                await brtUS.OpenFile(BrtUsPath, Provider);
+                await brtUS.OpenFile(BrtUsPath, SourceProvider);
                 File.WriteAllText("analysis-brt.csv", brtUS.AnalyzeLayout(true).GenerateCSV());
             }
         }
