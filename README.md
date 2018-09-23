@@ -3,7 +3,7 @@
 
 ## Building
 
-Building requires the .Net Core 1.1
+Building requires the .Net Core 2.0
 
 1. dotnet restore DotNetNdsToolkit.sln
 
