@@ -10,6 +10,7 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Collections.Concurrent;
 using SkyEditor.Core.TestComponents;
+using SkyEditor.Core.IO.PluginInfrastructure;
 
 namespace DotNetNdsToolkit
 {
@@ -212,11 +213,11 @@ namespace DotNetNdsToolkit
             {
                 get
                 {
-                    return ReadString(0, 12, Encoding.ASCII);
+                    return this.ReadString(0, 12, Encoding.ASCII);
                 }
                 set
                 {
-                    WriteString(0, Encoding.ASCII, value.PadRight(12, '\0').Substring(0, 12));
+                    this.WriteString(0, Encoding.ASCII, value.PadRight(12, '\0').Substring(0, 12));
                 }
             }
 
@@ -224,11 +225,11 @@ namespace DotNetNdsToolkit
             {
                 get
                 {
-                    return ReadString(12, 4, Encoding.ASCII);
+                    return this.ReadString(12, 4, Encoding.ASCII);
                 }
                 set
                 {
-                    WriteString(12, Encoding.ASCII, value.PadRight(4, '\0').Substring(0, 4));
+                    this.WriteString(12, Encoding.ASCII, value.PadRight(4, '\0').Substring(0, 4));
                 }
             }
 
@@ -236,11 +237,11 @@ namespace DotNetNdsToolkit
             {
                 get
                 {
-                    return ReadString(16, 2, Encoding.ASCII);
+                    return this.ReadString(16, 2, Encoding.ASCII);
                 }
                 set
                 {
-                    WriteString(16, Encoding.ASCII, value.PadRight(2, '\0').Substring(0, 2));
+                    this.WriteString(16, Encoding.ASCII, value.PadRight(2, '\0').Substring(0, 2));
                 }
             }
 
@@ -318,11 +319,11 @@ namespace DotNetNdsToolkit
             {
                 get
                 {
-                    return ReadInt32(0x20);
+                    return this.ReadInt32(0x20);
                 }
                 set
                 {
-                    WriteInt32(0x20, value);
+                    this.WriteInt32(0x20, value);
                 }
             }
 
@@ -330,22 +331,22 @@ namespace DotNetNdsToolkit
             {
                 get
                 {
-                    return ReadInt32(0x24);
+                    return this.ReadInt32(0x24);
                 }
                 set
                 {
-                    WriteInt32(0x24, value);
+                    this.WriteInt32(0x24, value);
                 }
             }
             public int Arm9RamAddress
             {
                 get
                 {
-                    return ReadInt32(0x28);
+                    return this.ReadInt32(0x28);
                 }
                 set
                 {
-                    WriteInt32(0x28, value);
+                    this.WriteInt32(0x28, value);
                 }
             }
 
@@ -353,11 +354,11 @@ namespace DotNetNdsToolkit
             {
                 get
                 {
-                    return ReadInt32(0x2C);
+                    return this.ReadInt32(0x2C);
                 }
                 set
                 {
-                    WriteInt32(0x2C, value);
+                    this.WriteInt32(0x2C, value);
                 }
             }
 
@@ -365,11 +366,11 @@ namespace DotNetNdsToolkit
             {
                 get
                 {
-                    return ReadInt32(0x30);
+                    return this.ReadInt32(0x30);
                 }
                 set
                 {
-                    WriteInt32(0x30, value);
+                    this.WriteInt32(0x30, value);
                 }
             }
 
@@ -377,22 +378,22 @@ namespace DotNetNdsToolkit
             {
                 get
                 {
-                    return ReadInt32(0x34);
+                    return this.ReadInt32(0x34);
                 }
                 set
                 {
-                    WriteInt32(0x34, value);
+                    this.WriteInt32(0x34, value);
                 }
             }
             public int Arm7RamAddress
             {
                 get
                 {
-                    return ReadInt32(0x38);
+                    return this.ReadInt32(0x38);
                 }
                 set
                 {
-                    WriteInt32(0x38, value);
+                    this.WriteInt32(0x38, value);
                 }
             }
 
@@ -400,11 +401,11 @@ namespace DotNetNdsToolkit
             {
                 get
                 {
-                    return ReadInt32(0x3C);
+                    return this.ReadInt32(0x3C);
                 }
                 set
                 {
-                    WriteInt32(0x3C, value);
+                    this.WriteInt32(0x3C, value);
                 }
             }
 
@@ -412,11 +413,11 @@ namespace DotNetNdsToolkit
             {
                 get
                 {
-                    return ReadInt32(0x40);
+                    return this.ReadInt32(0x40);
                 }
                 set
                 {
-                    WriteInt32(0x40, value);
+                    this.WriteInt32(0x40, value);
                 }
             }
 
@@ -424,11 +425,11 @@ namespace DotNetNdsToolkit
             {
                 get
                 {
-                    return ReadInt32(0x44);
+                    return this.ReadInt32(0x44);
                 }
                 set
                 {
-                    WriteInt32(0x44, value);
+                    this.WriteInt32(0x44, value);
                 }
             }
 
@@ -436,11 +437,11 @@ namespace DotNetNdsToolkit
             {
                 get
                 {
-                    return ReadInt32(0x48);
+                    return this.ReadInt32(0x48);
                 }
                 set
                 {
-                    WriteInt32(0x48, value);
+                    this.WriteInt32(0x48, value);
                 }
             }
 
@@ -448,11 +449,11 @@ namespace DotNetNdsToolkit
             {
                 get
                 {
-                    return ReadInt32(0x4C);
+                    return this.ReadInt32(0x4C);
                 }
                 set
                 {
-                    WriteInt32(0x4C, value);
+                    this.WriteInt32(0x4C, value);
                 }
             }
 
@@ -460,11 +461,11 @@ namespace DotNetNdsToolkit
             {
                 get
                 {
-                    return ReadInt32(0x50);
+                    return this.ReadInt32(0x50);
                 }
                 set
                 {
-                    WriteInt32(0x50, value);
+                    this.WriteInt32(0x50, value);
                 }
             }
 
@@ -472,11 +473,11 @@ namespace DotNetNdsToolkit
             {
                 get
                 {
-                    return ReadInt32(0x54);
+                    return this.ReadInt32(0x54);
                 }
                 set
                 {
-                    WriteInt32(0x54, value);
+                    this.WriteInt32(0x54, value);
                 }
             }
 
@@ -484,11 +485,11 @@ namespace DotNetNdsToolkit
             {
                 get
                 {
-                    return ReadInt32(0x58);
+                    return this.ReadInt32(0x58);
                 }
                 set
                 {
-                    WriteInt32(0x58, value);
+                    this.WriteInt32(0x58, value);
                 }
             }
 
@@ -496,11 +497,11 @@ namespace DotNetNdsToolkit
             {
                 get
                 {
-                    return ReadInt32(0x5C);
+                    return this.ReadInt32(0x5C);
                 }
                 set
                 {
-                    WriteInt32(0x5C, value);
+                    this.WriteInt32(0x5C, value);
                 }
             }
 
@@ -511,11 +512,11 @@ namespace DotNetNdsToolkit
             {
                 get
                 {
-                    return ReadInt32(0x68);
+                    return this.ReadInt32(0x68);
                 }
                 set
                 {
-                    WriteInt32(0x68, value);
+                    this.WriteInt32(0x68, value);
                 }
             }
 
@@ -787,11 +788,11 @@ namespace DotNetNdsToolkit
         /// <param name="fileLength">Length of the file to pad</param>
         /// <param name="blockSize">The current block size. Defaults to 0x200</param>
         /// <returns>The length in bytes of the padding written</returns>
-        private async Task<int> WritePadding(int index, int fileLength, int blockSize = 0x200)
+        private async Task<int> WritePadding(long index, int fileLength, int blockSize = 0x200)
         {
             var paddingLength = CalculatePaddingSize(fileLength, blockSize);
             // await WriteAsync(index, new byte[paddingLength]); // Faster
-            await WriteAsync(index, Enumerable.Repeat<byte>(0xFF, paddingLength).ToArray());
+            await this.WriteAsync(index, Enumerable.Repeat<byte>(0xFF, paddingLength).ToArray());
             return paddingLength;
         }
 
@@ -810,7 +811,7 @@ namespace DotNetNdsToolkit
                 {
                     var data = filesAlloc[i];
 
-                    await WriteAsync(nextFileOffset, data); // Write data
+                    await this.WriteAsync(nextFileOffset, data); // Write data
                     var paddingLength = await WritePadding(nextFileOffset + data.Length, data.Length);
 
                     fat.AddRange(BitConverter.GetBytes(nextFileOffset)); // File start index
@@ -911,11 +912,11 @@ namespace DotNetNdsToolkit
             // Log Base 2 (Cartridge size / 128KB) = DeviceCapacity
             var deviceCapacity = (byte)Math.Ceiling(Math.Log(Math.Ceiling((double)totalFileSize / (128 * 1024)), 2));
             header.DeviceCapacity = deviceCapacity;
-            this.Length = (long)(Math.Pow(2, deviceCapacity) * 128 * 1024);
+            this.SetLength((long)(Math.Pow(2, deviceCapacity) * 128 * 1024));
 
             // Header: always at 0x00
             // Note: Will rewrite header later to fix file references
-            await WriteAsync(0, await header.ReadAsync());
+            await this.WriteAsync(0, await header.ReadAsync());
 
             // ARM9 Binary: always at 0x4000
             header.FileArm9OverlayOffset = 0x4000;
@@ -928,7 +929,7 @@ namespace DotNetNdsToolkit
                 header.FileArm9OverlaySize = arm9Bin.Length;
             }
             var arm9End = header.FileArm9OverlayOffset + arm9Bin.Length;
-            await WriteAsync(header.FileArm9OverlayOffset, arm9Bin);
+            await this.WriteAsync(header.FileArm9OverlayOffset, arm9Bin);
             nextFileOffset = arm9End + await WritePadding(arm9End, arm9Bin.Length);
 
             // ARM9 Overlay Table
@@ -938,7 +939,7 @@ namespace DotNetNdsToolkit
             for (int i = 0; i < overlay9.Count; i += 1)
             {
                 var bytes = overlay9[i].GetBytes();
-                await WriteAsync(header.FileArm9OverlayOffset + 32 * i, bytes);
+                await this.WriteAsync(header.FileArm9OverlayOffset + 32 * i, bytes);
                 overlay9Length += 32;
             }
             header.FileArm9OverlaySize = overlay9Length;
@@ -959,7 +960,7 @@ namespace DotNetNdsToolkit
             header.FileArm7OverlayOffset = nextFileOffset;
             header.FileArm7OverlaySize = arm7Bin.Length;
             var arm7End = header.FileArm7OverlayOffset + arm7Bin.Length;
-            await WriteAsync(header.FileArm7OverlayOffset, arm7Bin);
+            await this.WriteAsync(header.FileArm7OverlayOffset, arm7Bin);
             nextFileOffset = arm7End + await WritePadding(arm7End, arm7Bin.Length);
 
             // ARM7 Overlay Table
@@ -969,7 +970,7 @@ namespace DotNetNdsToolkit
             for (int i = 0; i < overlay7.Count; i += 1)
             {
                 var bytes = overlay7[i].GetBytes();
-                await WriteAsync(header.FileArm7OverlayOffset + 32 * i, bytes);
+                await this.WriteAsync(header.FileArm7OverlayOffset + 32 * i, bytes);
                 overlay7Length += bytes.Length;
             }
             header.FileArm7OverlaySize = overlay7Length;
@@ -985,19 +986,19 @@ namespace DotNetNdsToolkit
             }
 
             // Write FNT
-            await WriteAsync(nextFileOffset, fntSection.ToArray());
+            await this.WriteAsync(nextFileOffset, fntSection.ToArray());
             nextFileOffset += fntSection.Count + await WritePadding(nextFileOffset + fntSection.Count, fntSection.Count);
 
             // Write dummy fat, since it's still being made
             // -- Calculate total fat size (fat already contains overlays, just need to add nitrofs files)
             var fatSize = fat.Count + filesAlloc.Keys.Count * 8;
             var fatIndex = nextFileOffset;
-            await WriteAsync(fatIndex, new byte[fatSize]);
+            await this.WriteAsync(fatIndex, new byte[fatSize]);
             nextFileOffset += fatSize + await WritePadding(fatIndex, fatSize);
 
             // Write banner            
             header.IconOffset = nextFileOffset;
-            await WriteAsync(header.IconOffset, banner);
+            await this.WriteAsync(header.IconOffset, banner);
             nextFileOffset += header.IconLength + await WritePadding(header.IconOffset + header.IconLength, header.IconLength);
 
             // Write Files
@@ -1007,10 +1008,10 @@ namespace DotNetNdsToolkit
             }
 
             // Write the actual fat
-            await WriteAsync(fatIndex, fat.ToArray());
+            await this.WriteAsync(fatIndex, fat.ToArray());
 
             // Write the updated header
-            await WriteAsync(0, await header.ReadAsync());
+            await this.WriteAsync(0, await header.ReadAsync());
 
             await base.Save(filename, provider);
         }
@@ -1116,7 +1117,7 @@ namespace DotNetNdsToolkit
             var output = new List<FileAllocationEntry>();
             for (int i = Header.FileAllocationTableOffset; i < Header.FileAllocationTableOffset + Header.FileAllocationTableSize; i += 8)
             {
-                output.Add(new FileAllocationEntry(await ReadInt32Async(i), await ReadInt32Async(i + 4)));
+                output.Add(new FileAllocationEntry(await this.ReadInt32Async(i), await this.ReadInt32Async(i + 4)));
             }
             return output;
         }
@@ -1151,15 +1152,15 @@ namespace DotNetNdsToolkit
                 if (length > 128)
                 {
                     // Directory
-                    var name = await ReadStringAsync(offset + 1, length & 0x7F, Encoding.ASCII);
-                    var subDirID = await ReadUInt16Async(offset + 1 + (length & 0x7F));
+                    var name = await this.ReadStringAsync(offset + 1, length & 0x7F, Encoding.ASCII);
+                    var subDirID = await this.ReadUInt16Async(offset + 1 + (length & 0x7F));
                     subTables.Add(new FNTSubTable { Length = length, Name = name, SubDirectoryID = subDirID });
                     offset += (length & 0x7F) + 1 + 2;
                 }
                 else if (length < 128)
                 {
                     // File
-                    var name = await ReadStringAsync(offset + 1, length, Encoding.ASCII);
+                    var name = await this.ReadStringAsync(offset + 1, length, Encoding.ASCII);
                     subTables.Add(new FNTSubTable { Length = length, Name = name, ParentFileID = parentFileID });
                     parentFileID += 1;
                     offset += length + 1;
@@ -1325,7 +1326,7 @@ namespace DotNetNdsToolkit
         /// </summary>
         private bool CheckNeedsArm9Footer()
         {
-            return ReadUInt32(Header.Arm9RomOffset + Header.Arm9Size) == 0xDEC00621;
+            return this.ReadUInt32(Header.Arm9RomOffset + Header.Arm9Size) == 0xDEC00621;
         }
 
         /// <summary>
