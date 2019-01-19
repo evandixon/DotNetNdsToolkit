@@ -17,7 +17,7 @@ namespace DotNetNdsToolkit
     /// <summary>
     /// A ROM for the Nintendo DS
     /// </summary>
-    public class NdsRom : GenericFile, IReportProgress, IIOProvider, IDisposable, IDetectableFileType
+    public class NdsRom : ICreatableFile, IOnDisk, IOpenableFile, ISavable, ISavableAs, IReportProgress, IIOProvider, IDisposable, IDetectableFileType
     {
 
         #region Static Methods
@@ -648,13 +648,31 @@ namespace DotNetNdsToolkit
 
         public NdsRom()
         {
-            EnableInMemoryLoad = true;
+            RawData.EnableInMemoryLoad = true;
             (this as IIOProvider).ResetWorkingDirectory();
             DataPath = "data";
         }
 
         public event EventHandler<ProgressReportedEventArgs> ProgressChanged;
         public event EventHandler Completed;
+        public event EventHandler FileSaved;
+
+        /// <summary>
+        /// The underlying data
+        /// </summary>
+        private GenericFile RawData { get; set; }
+
+        /// <summary>
+        /// The I/O provider used for the virtual file system (aka the staging area used to store changes that have not been saved)
+        /// </summary>
+        private IIOProvider CurrentIOProvider { get; set; }
+
+        /// <summary>
+        /// The location of the ROM
+        /// </summary>
+        public string Filename { get; set; }
+
+        public string Name => Path.GetFileName(Filename);
 
         /// <summary>
         /// The path of the nitrofs file system is stored. Defaults to "data".
@@ -667,67 +685,41 @@ namespace DotNetNdsToolkit
         private async Task LoadRomHeader()
         {          
             Header = new NdsHeader();
-            Header.CreateFile(await ReadAsync(0, 512));
+            Header.CreateFile(await RawData.ReadAsync(0, 512));
 
             var loadingTasks = new List<Task>();
 
             // Load Arm9 Overlays
             var arm9overlayTask = Task.Run(async () => Arm9OverlayTable = await ParseArm9OverlayTable());
-
-            if (IsThreadSafe)
-            {
-                loadingTasks.Add(arm9overlayTask);
-            }
-            else
-            {
-                await arm9overlayTask;
-            }
+            loadingTasks.Add(arm9overlayTask);
 
             // Load Arm7 Overlays
             var arm7overlayTask = Task.Run(async () => Arm7OverlayTable = await ParseArm7OverlayTable());
-
-            if (IsThreadSafe)
-            {
-                loadingTasks.Add(arm7overlayTask);
-            }
-            else
-            {
-                await arm7overlayTask;
-            }
+            loadingTasks.Add(arm7overlayTask);
 
             // Load FAT
             var fatTask = Task.Run(async () => FAT = await ParseFAT());
-
-            if (IsThreadSafe)
-            {
-                loadingTasks.Add(fatTask);
-            }
-            else
-            {
-                await fatTask;
-            }
+            loadingTasks.Add(fatTask);
 
             // Load FNT
             var fntTask = Task.Run(async () => FNT = await ParseFNT());
-
-            if (IsThreadSafe)
-            {
-                loadingTasks.Add(fntTask);
-            }
-            else
-            {
-                await fntTask;
-            }
+            loadingTasks.Add(fntTask);
 
             // Wait for all loading
             await Task.WhenAll(loadingTasks);
         }
 
-        public override async Task OpenFile(string filename, IIOProvider provider)
+        public void CreateFile(string name)
         {
+            RawData.CreateFile(name);
+        }
+
+        public async Task OpenFile(string filename, IIOProvider provider)
+        {
+            this.CurrentIOProvider = provider;
             if (provider.FileExists(filename))
             {
-                await base.OpenFile(filename, provider);
+                await RawData.OpenFile(filename, provider);
 
                 // Clear virtual path if it exists
                 if (!string.IsNullOrEmpty(VirtualPath) && provider.DirectoryExists(VirtualPath))
@@ -741,8 +733,7 @@ namespace DotNetNdsToolkit
             }
             else if (provider.DirectoryExists(filename))
             {
-                this.CurrentIOProvider = provider;
-                base.CreateFile(new byte[0]);
+                RawData.CreateFile(new byte[0]);
                 VirtualPath = filename;
                 DisposeVirtualPath = false;
             }
@@ -754,7 +745,7 @@ namespace DotNetNdsToolkit
 
         public async Task OpenFileInMemory(byte[] rawData)
         {
-            base.CreateFile(rawData);
+            RawData.CreateFile(rawData);
             this.CurrentIOProvider = new MemoryIOProvider();
             VirtualPath = "/";
             await LoadRomHeader();
@@ -792,7 +783,7 @@ namespace DotNetNdsToolkit
         {
             var paddingLength = CalculatePaddingSize(fileLength, blockSize);
             // await WriteAsync(index, new byte[paddingLength]); // Faster
-            await this.WriteAsync(index, Enumerable.Repeat<byte>(0xFF, paddingLength).ToArray());
+            await RawData.WriteAsync(index, Enumerable.Repeat<byte>(0xFF, paddingLength).ToArray());
             return paddingLength;
         }
 
@@ -811,7 +802,7 @@ namespace DotNetNdsToolkit
                 {
                     var data = filesAlloc[i];
 
-                    await this.WriteAsync(nextFileOffset, data); // Write data
+                    await RawData.WriteAsync(nextFileOffset, data); // Write data
                     var paddingLength = await WritePadding(nextFileOffset + data.Length, data.Length);
 
                     fat.AddRange(BitConverter.GetBytes(nextFileOffset)); // File start index
@@ -826,7 +817,7 @@ namespace DotNetNdsToolkit
             return nextFileOffset;
         }
 
-        public override async Task Save(string filename, IIOProvider provider)
+        public async Task Save(string filename, IIOProvider provider)
         {
             var overlay9Alloc = new ConcurrentDictionary<int, byte[]>();
             var overlay7Alloc = new ConcurrentDictionary<int, byte[]>();
@@ -847,7 +838,6 @@ namespace DotNetNdsToolkit
             // - Identify ARM9 overlays
             var overlay9Raw = (this as IIOProvider).ReadAllBytes("/y9.bin");
             var arm9For = new AsyncFor();
-            arm9For.RunSynchronously = !IsThreadSafe;
             await arm9For.RunFor(i =>
             {
                 var entry = new OverlayTableEntry(overlay9Raw, i);
@@ -862,7 +852,6 @@ namespace DotNetNdsToolkit
             // - Identify ARM7 overlays
             var overlay7Raw = (this as IIOProvider).ReadAllBytes("/y7.bin");
             var arm7For = new AsyncFor();
-            arm7For.RunSynchronously = !this.IsThreadSafe;
             await arm7For.RunFor(i =>
             {
                 var entry = new OverlayTableEntry(overlay7Raw, i);
@@ -880,7 +869,6 @@ namespace DotNetNdsToolkit
             var overlay7Max = overlay7.Keys.Count > 0 ? overlay7.Keys.Max() : 0;
             var files = (this as IIOProvider).GetFiles("/data", "*", false);
             var filesFor = new AsyncFor();
-            filesFor.RunSynchronously = !IsThreadSafe;
             await filesFor.RunFor(i =>
             {
                 var data = (this as IIOProvider).ReadAllBytes(files[i]);
@@ -912,11 +900,11 @@ namespace DotNetNdsToolkit
             // Log Base 2 (Cartridge size / 128KB) = DeviceCapacity
             var deviceCapacity = (byte)Math.Ceiling(Math.Log(Math.Ceiling((double)totalFileSize / (128 * 1024)), 2));
             header.DeviceCapacity = deviceCapacity;
-            this.SetLength((long)(Math.Pow(2, deviceCapacity) * 128 * 1024));
+            RawData.SetLength((long)(Math.Pow(2, deviceCapacity) * 128 * 1024));
 
             // Header: always at 0x00
             // Note: Will rewrite header later to fix file references
-            await this.WriteAsync(0, await header.ReadAsync());
+            await RawData.WriteAsync(0, await header.ReadAsync());
 
             // ARM9 Binary: always at 0x4000
             header.FileArm9OverlayOffset = 0x4000;
@@ -929,7 +917,7 @@ namespace DotNetNdsToolkit
                 header.FileArm9OverlaySize = arm9Bin.Length;
             }
             var arm9End = header.FileArm9OverlayOffset + arm9Bin.Length;
-            await this.WriteAsync(header.FileArm9OverlayOffset, arm9Bin);
+            await RawData.WriteAsync(header.FileArm9OverlayOffset, arm9Bin);
             nextFileOffset = arm9End + await WritePadding(arm9End, arm9Bin.Length);
 
             // ARM9 Overlay Table
@@ -939,7 +927,7 @@ namespace DotNetNdsToolkit
             for (int i = 0; i < overlay9.Count; i += 1)
             {
                 var bytes = overlay9[i].GetBytes();
-                await this.WriteAsync(header.FileArm9OverlayOffset + 32 * i, bytes);
+                await RawData.WriteAsync(header.FileArm9OverlayOffset + 32 * i, bytes);
                 overlay9Length += 32;
             }
             header.FileArm9OverlaySize = overlay9Length;
@@ -960,7 +948,7 @@ namespace DotNetNdsToolkit
             header.FileArm7OverlayOffset = nextFileOffset;
             header.FileArm7OverlaySize = arm7Bin.Length;
             var arm7End = header.FileArm7OverlayOffset + arm7Bin.Length;
-            await this.WriteAsync(header.FileArm7OverlayOffset, arm7Bin);
+            await RawData.WriteAsync(header.FileArm7OverlayOffset, arm7Bin);
             nextFileOffset = arm7End + await WritePadding(arm7End, arm7Bin.Length);
 
             // ARM7 Overlay Table
@@ -970,7 +958,7 @@ namespace DotNetNdsToolkit
             for (int i = 0; i < overlay7.Count; i += 1)
             {
                 var bytes = overlay7[i].GetBytes();
-                await this.WriteAsync(header.FileArm7OverlayOffset + 32 * i, bytes);
+                await RawData.WriteAsync(header.FileArm7OverlayOffset + 32 * i, bytes);
                 overlay7Length += bytes.Length;
             }
             header.FileArm7OverlaySize = overlay7Length;
@@ -986,19 +974,19 @@ namespace DotNetNdsToolkit
             }
 
             // Write FNT
-            await this.WriteAsync(nextFileOffset, fntSection.ToArray());
+            await RawData.WriteAsync(nextFileOffset, fntSection.ToArray());
             nextFileOffset += fntSection.Count + await WritePadding(nextFileOffset + fntSection.Count, fntSection.Count);
 
             // Write dummy fat, since it's still being made
             // -- Calculate total fat size (fat already contains overlays, just need to add nitrofs files)
             var fatSize = fat.Count + filesAlloc.Keys.Count * 8;
             var fatIndex = nextFileOffset;
-            await this.WriteAsync(fatIndex, new byte[fatSize]);
+            await RawData.WriteAsync(fatIndex, new byte[fatSize]);
             nextFileOffset += fatSize + await WritePadding(fatIndex, fatSize);
 
             // Write banner            
             header.IconOffset = nextFileOffset;
-            await this.WriteAsync(header.IconOffset, banner);
+            await RawData.WriteAsync(header.IconOffset, banner);
             nextFileOffset += header.IconLength + await WritePadding(header.IconOffset + header.IconLength, header.IconLength);
 
             // Write Files
@@ -1008,13 +996,24 @@ namespace DotNetNdsToolkit
             }
 
             // Write the actual fat
-            await this.WriteAsync(fatIndex, fat.ToArray());
+            await RawData.WriteAsync(fatIndex, fat.ToArray());
 
             // Write the updated header
-            await this.WriteAsync(0, await header.ReadAsync());
+            await RawData.WriteAsync(0, await header.ReadAsync());
 
-            await base.Save(filename, provider);
+            await RawData.Save(filename, provider);
+
+            FileSaved?.Invoke(this, new EventArgs());
         }
+
+        public async Task Save(IIOProvider provider)
+        {
+            await Save(this.Filename, provider);
+        }
+
+        public string GetDefaultExtension() => "*.nds";
+
+        public IEnumerable<string> GetSupportedExtensions() => new[] { "*.nds", "*.srl" };
 
         /// <summary>
         /// Analyzes the layout of the sections of the ROM
@@ -1097,7 +1096,7 @@ namespace DotNetNdsToolkit
             var output = new List<OverlayTableEntry>();
             for (int i = Header.FileArm9OverlayOffset; i < Header.FileArm9OverlayOffset + Header.FileArm9OverlaySize; i += 32)
             {
-                output.Add(new OverlayTableEntry(await ReadAsync(i, 32)));
+                output.Add(new OverlayTableEntry(await RawData.ReadAsync(i, 32)));
             }
             return output;
         }
@@ -1107,7 +1106,7 @@ namespace DotNetNdsToolkit
             var output = new List<OverlayTableEntry>();
             for (int i = Header.FileArm7OverlayOffset; i < Header.FileArm7OverlayOffset + Header.FileArm7OverlaySize; i += 32)
             {
-                output.Add(new OverlayTableEntry(await ReadAsync(i, 32)));
+                output.Add(new OverlayTableEntry(await RawData.ReadAsync(i, 32)));
             }
             return output;
         }
@@ -1117,7 +1116,7 @@ namespace DotNetNdsToolkit
             var output = new List<FileAllocationEntry>();
             for (int i = Header.FileAllocationTableOffset; i < Header.FileAllocationTableOffset + Header.FileAllocationTableSize; i += 8)
             {
-                output.Add(new FileAllocationEntry(await this.ReadInt32Async(i), await this.ReadInt32Async(i + 4)));
+                output.Add(new FileAllocationEntry(await RawData.ReadInt32Async(i), await RawData.ReadInt32Async(i + 4)));
             }
             return output;
         }
@@ -1125,14 +1124,14 @@ namespace DotNetNdsToolkit
         private async Task<FilenameTable> ParseFNT()
         {
             // Read the raw structures
-            var root = new DirectoryMainTable(await ReadAsync(Header.FilenameTableOffset, 8));
+            var root = new DirectoryMainTable(await RawData.ReadAsync(Header.FilenameTableOffset, 8));
             var rootDirectories = new List<DirectoryMainTable>();
 
             // - In the root directory only, ParentDir means the number of directories
             for (int i = 1; i < root.ParentDir; i += 1)
             {
                 var offset = Header.FilenameTableOffset + i * 8;
-                rootDirectories.Add(new DirectoryMainTable(await ReadAsync(offset, 8)));
+                rootDirectories.Add(new DirectoryMainTable(await RawData.ReadAsync(offset, 8)));
             }
 
             // Build the filename table
@@ -1146,21 +1145,21 @@ namespace DotNetNdsToolkit
         {
             var subTables = new List<FNTSubTable>();
             var offset = rootSubTableOffset + Header.FilenameTableOffset;
-            var length = await ReadAsync(offset);
+            var length = await RawData.ReadAsync(offset);
             while (length > 0)
             {
                 if (length > 128)
                 {
                     // Directory
-                    var name = await this.ReadStringAsync(offset + 1, length & 0x7F, Encoding.ASCII);
-                    var subDirID = await this.ReadUInt16Async(offset + 1 + (length & 0x7F));
+                    var name = await RawData.ReadStringAsync(offset + 1, length & 0x7F, Encoding.ASCII);
+                    var subDirID = await RawData.ReadUInt16Async(offset + 1 + (length & 0x7F));
                     subTables.Add(new FNTSubTable { Length = length, Name = name, SubDirectoryID = subDirID });
                     offset += (length & 0x7F) + 1 + 2;
                 }
                 else if (length < 128)
                 {
                     // File
-                    var name = await this.ReadStringAsync(offset + 1, length, Encoding.ASCII);
+                    var name = await RawData.ReadStringAsync(offset + 1, length, Encoding.ASCII);
                     subTables.Add(new FNTSubTable { Length = length, Name = name, ParentFileID = parentFileID });
                     parentFileID += 1;
                     offset += length + 1;
@@ -1170,7 +1169,7 @@ namespace DotNetNdsToolkit
                     throw new FormatException($"Subtable length of 0x80 is not supported and likely invalid.  Root subtable offset: {rootSubTableOffset}");
                 }
 
-                length = await ReadAsync(offset);
+                length = await RawData.ReadAsync(offset);
             }
             return subTables;
         }
@@ -1326,7 +1325,7 @@ namespace DotNetNdsToolkit
         /// </summary>
         private bool CheckNeedsArm9Footer()
         {
-            return this.ReadUInt32(Header.Arm9RomOffset + Header.Arm9Size) == 0xDEC00621;
+            return RawData.ReadUInt32(Header.Arm9RomOffset + Header.Arm9Size) == 0xDEC00621;
         }
 
         /// <summary>
@@ -1371,15 +1370,8 @@ namespace DotNetNdsToolkit
                     Interlocked.Increment(ref _extractedFileCount);
                     ReportProgressChanged();
                 });
-
-                if (IsThreadSafe)
-                {
-                    extractionTasks.Add(currentTask);
-                }
-                else
-                {
-                    await currentTask;
-                }
+                
+                extractionTasks.Add(currentTask);
             }
             await Task.WhenAll(extractionTasks);
         }
@@ -1513,6 +1505,7 @@ namespace DotNetNdsToolkit
                 _workingDirectoryParts = GetPathParts(value);
             }
         }
+        
         private string[] _workingDirectoryParts;
 
         protected string[] GetPathParts(string path)
@@ -1955,7 +1948,7 @@ namespace DotNetNdsToolkit
                 else
                 {
                     var entry = GetFATEntry(filename);
-                    return Read(entry.Value.Offset, entry.Value.Length);
+                    return RawData.Read(entry.Value.Offset, entry.Value.Length);
                 }
             }
         }
@@ -2084,16 +2077,17 @@ namespace DotNetNdsToolkit
 
         #region IDisposable Implementation
 
-        protected override void Dispose(bool disposing)
+        public void Dispose()
         {
-            base.Dispose(disposing);
+            RawData.Dispose();
 
             if (!string.IsNullOrEmpty(VirtualPath) && CurrentIOProvider.DirectoryExists(VirtualPath) && DisposeVirtualPath)
             {
                 CurrentIOProvider.DeleteDirectory(VirtualPath);
                 VirtualPath = null;
             }
-        }        
+        }
+
         #endregion
     }
 }
