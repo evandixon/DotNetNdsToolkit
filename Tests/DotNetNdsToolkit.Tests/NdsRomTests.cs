@@ -7,6 +7,8 @@ using SkyEditor.Core.TestComponents;
 using SkyEditor.Core.Utilities;
 using System.Collections.Concurrent;
 using System.Linq;
+using SkyEditor.IO.FileSystem;
+using SkyEditor.Utilities.AsyncFor;
 
 namespace DotNetNdsToolkit.Tests
 {
@@ -19,8 +21,8 @@ namespace DotNetNdsToolkit.Tests
         public const string BrtUsPath = @"Resources/brtu.nds";
         public const string BrtUsUnpackDir = @"RawFiles-BRTUS";
 
-        private IIOProvider SourceProvider { get; set; }
-        private IIOProvider OutputProvider { get; set; }
+        private IFileSystem SourceProvider { get; set; }
+        private IFileSystem OutputProvider { get; set; }
 
         [TestInitialize]
         public void TestInit()
@@ -33,8 +35,8 @@ namespace DotNetNdsToolkit.Tests
             {
                 Assert.Fail("Missing test ROM: Pokémon Mystery Dungeon: Blue Rescue Team (US).  Place it at the following path: " + BrtUsPath);
             }
-            SourceProvider = new PhysicalIOProvider();
-            OutputProvider = new MemoryIOProvider();
+            SourceProvider = new PhysicalFileSystem();
+            OutputProvider = new MemoryFileSystem();
         }
 
         [TestMethod]

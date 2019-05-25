@@ -11,13 +11,15 @@ using System.Threading;
 using System.Collections.Concurrent;
 using SkyEditor.Core.TestComponents;
 using SkyEditor.Core.IO.PluginInfrastructure;
+using SkyEditor.Utilities.AsyncFor;
+using SkyEditor.IO.FileSystem;
 
 namespace DotNetNdsToolkit
 {
     /// <summary>
     /// A ROM for the Nintendo DS
     /// </summary>
-    public class NdsRom : GenericFile, IReportProgress, IIOProvider, IDisposable, IDetectableFileType
+    public class NdsRom : ICreatableFile, IOnDisk, IOpenableFile, ISavable, ISavableAs, IReportProgress, IFileSystem, IDisposable, IDetectableFileType
     {
 
         #region Static Methods
@@ -648,13 +650,31 @@ namespace DotNetNdsToolkit
 
         public NdsRom()
         {
-            EnableInMemoryLoad = true;
-            (this as IIOProvider).ResetWorkingDirectory();
+            RawData.EnableInMemoryLoad = true;
+            (this as IFileSystem).ResetWorkingDirectory();
             DataPath = "data";
         }
 
         public event EventHandler<ProgressReportedEventArgs> ProgressChanged;
         public event EventHandler Completed;
+        public event EventHandler FileSaved;
+
+        /// <summary>
+        /// The underlying data
+        /// </summary>
+        private GenericFile RawData { get; set; }
+
+        /// <summary>
+        /// The I/O provider used for the virtual file system (aka the staging area used to store changes that have not been saved)
+        /// </summary>
+        private IFileSystem CurrentFileSystem { get; set; }
+
+        /// <summary>
+        /// The location of the ROM
+        /// </summary>
+        public string Filename { get; set; }
+
+        public string Name => Path.GetFileName(Filename);
 
         /// <summary>
         /// The path of the nitrofs file system is stored. Defaults to "data".
@@ -667,67 +687,41 @@ namespace DotNetNdsToolkit
         private async Task LoadRomHeader()
         {          
             Header = new NdsHeader();
-            Header.CreateFile(await ReadAsync(0, 512));
+            Header.CreateFile(await RawData.ReadAsync(0, 512));
 
             var loadingTasks = new List<Task>();
 
             // Load Arm9 Overlays
             var arm9overlayTask = Task.Run(async () => Arm9OverlayTable = await ParseArm9OverlayTable());
-
-            if (IsThreadSafe)
-            {
-                loadingTasks.Add(arm9overlayTask);
-            }
-            else
-            {
-                await arm9overlayTask;
-            }
+            loadingTasks.Add(arm9overlayTask);
 
             // Load Arm7 Overlays
             var arm7overlayTask = Task.Run(async () => Arm7OverlayTable = await ParseArm7OverlayTable());
-
-            if (IsThreadSafe)
-            {
-                loadingTasks.Add(arm7overlayTask);
-            }
-            else
-            {
-                await arm7overlayTask;
-            }
+            loadingTasks.Add(arm7overlayTask);
 
             // Load FAT
             var fatTask = Task.Run(async () => FAT = await ParseFAT());
-
-            if (IsThreadSafe)
-            {
-                loadingTasks.Add(fatTask);
-            }
-            else
-            {
-                await fatTask;
-            }
+            loadingTasks.Add(fatTask);
 
             // Load FNT
             var fntTask = Task.Run(async () => FNT = await ParseFNT());
-
-            if (IsThreadSafe)
-            {
-                loadingTasks.Add(fntTask);
-            }
-            else
-            {
-                await fntTask;
-            }
+            loadingTasks.Add(fntTask);
 
             // Wait for all loading
             await Task.WhenAll(loadingTasks);
         }
 
-        public override async Task OpenFile(string filename, IIOProvider provider)
+        public void CreateFile(string name)
         {
+            RawData.CreateFile(name);
+        }
+
+        public async Task OpenFile(string filename, IFileSystem provider)
+        {
+            this.CurrentFileSystem = provider;
             if (provider.FileExists(filename))
             {
-                await base.OpenFile(filename, provider);
+                await RawData.OpenFile(filename, provider);
 
                 // Clear virtual path if it exists
                 if (!string.IsNullOrEmpty(VirtualPath) && provider.DirectoryExists(VirtualPath))
@@ -741,8 +735,7 @@ namespace DotNetNdsToolkit
             }
             else if (provider.DirectoryExists(filename))
             {
-                this.CurrentIOProvider = provider;
-                base.CreateFile(new byte[0]);
+                RawData.CreateFile(new byte[0]);
                 VirtualPath = filename;
                 DisposeVirtualPath = false;
             }
@@ -754,8 +747,8 @@ namespace DotNetNdsToolkit
 
         public async Task OpenFileInMemory(byte[] rawData)
         {
-            base.CreateFile(rawData);
-            this.CurrentIOProvider = new MemoryIOProvider();
+            RawData.CreateFile(rawData);
+            this.CurrentFileSystem = new MemoryFileSystem();
             VirtualPath = "/";
             await LoadRomHeader();
         }
@@ -792,7 +785,7 @@ namespace DotNetNdsToolkit
         {
             var paddingLength = CalculatePaddingSize(fileLength, blockSize);
             // await WriteAsync(index, new byte[paddingLength]); // Faster
-            await this.WriteAsync(index, Enumerable.Repeat<byte>(0xFF, paddingLength).ToArray());
+            await RawData.WriteAsync(index, Enumerable.Repeat<byte>(0xFF, paddingLength).ToArray());
             return paddingLength;
         }
 
@@ -811,7 +804,7 @@ namespace DotNetNdsToolkit
                 {
                     var data = filesAlloc[i];
 
-                    await this.WriteAsync(nextFileOffset, data); // Write data
+                    await RawData.WriteAsync(nextFileOffset, data); // Write data
                     var paddingLength = await WritePadding(nextFileOffset + data.Length, data.Length);
 
                     fat.AddRange(BitConverter.GetBytes(nextFileOffset)); // File start index
@@ -826,7 +819,7 @@ namespace DotNetNdsToolkit
             return nextFileOffset;
         }
 
-        public override async Task Save(string filename, IIOProvider provider)
+        public async Task Save(string filename, IFileSystem provider)
         {
             var overlay9Alloc = new ConcurrentDictionary<int, byte[]>();
             var overlay7Alloc = new ConcurrentDictionary<int, byte[]>();
@@ -841,35 +834,33 @@ namespace DotNetNdsToolkit
             // Identify files
             var header = new NdsHeader();
             await header.OpenFile("/header.bin", this);
-            var arm9Bin = (this as IIOProvider).ReadAllBytes("/arm9.bin");
-            var arm7Bin = (this as IIOProvider).ReadAllBytes("/arm7.bin");
-            var banner = (this as IIOProvider).ReadAllBytes("/banner.bin");
+            var arm9Bin = (this as IFileSystem).ReadAllBytes("/arm9.bin");
+            var arm7Bin = (this as IFileSystem).ReadAllBytes("/arm7.bin");
+            var banner = (this as IFileSystem).ReadAllBytes("/banner.bin");
             // - Identify ARM9 overlays
-            var overlay9Raw = (this as IIOProvider).ReadAllBytes("/y9.bin");
+            var overlay9Raw = (this as IFileSystem).ReadAllBytes("/y9.bin");
             var arm9For = new AsyncFor();
-            arm9For.RunSynchronously = !IsThreadSafe;
             await arm9For.RunFor(i =>
             {
                 var entry = new OverlayTableEntry(overlay9Raw, i);
                 var overlayPath = $"/overlay/overlay_{entry.FileID.ToString().PadLeft(4, '0')}.bin";
-                if ((this as IIOProvider).FileExists(overlayPath))
+                if ((this as IFileSystem).FileExists(overlayPath))
                 {
-                    overlay9Alloc[entry.FileID] = (this as IIOProvider).ReadAllBytes(overlayPath);
+                    overlay9Alloc[entry.FileID] = (this as IFileSystem).ReadAllBytes(overlayPath);
                 }
                 overlay9[entry.OverlayID] = entry;
             }, 0, overlay9Raw.Length - 1, 32);
 
             // - Identify ARM7 overlays
-            var overlay7Raw = (this as IIOProvider).ReadAllBytes("/y7.bin");
+            var overlay7Raw = (this as IFileSystem).ReadAllBytes("/y7.bin");
             var arm7For = new AsyncFor();
-            arm7For.RunSynchronously = !this.IsThreadSafe;
             await arm7For.RunFor(i =>
             {
                 var entry = new OverlayTableEntry(overlay7Raw, i);
                 var overlayPath = $"/overlay7/overlay_{entry.FileID.ToString().PadLeft(4, '0')}.bin";
-                if ((this as IIOProvider).FileExists(overlayPath))
+                if ((this as IFileSystem).FileExists(overlayPath))
                 {
-                    var data = (this as IIOProvider).ReadAllBytes(overlayPath);
+                    var data = (this as IFileSystem).ReadAllBytes(overlayPath);
                     overlay7Alloc[entry.FileID] = data;
                 }
                 overlay7[entry.OverlayID] = entry;
@@ -878,12 +869,11 @@ namespace DotNetNdsToolkit
             // - Nitrofs
             var overlay9Max = overlay9.Keys.Count > 0 ? overlay9.Keys.Max() : 0;
             var overlay7Max = overlay7.Keys.Count > 0 ? overlay7.Keys.Max() : 0;
-            var files = (this as IIOProvider).GetFiles("/data", "*", false);
+            var files = (this as IFileSystem).GetFiles("/data", "*", false);
             var filesFor = new AsyncFor();
-            filesFor.RunSynchronously = !IsThreadSafe;
             await filesFor.RunFor(i =>
             {
-                var data = (this as IIOProvider).ReadAllBytes(files[i]);
+                var data = (this as IFileSystem).ReadAllBytes(files[i]);
                 var fileID = i + overlay9Max + overlay7Max + 1; // File ID is 1 greater than highest index in overlay9 and overlay7
                 filesAlloc[fileID] = data;
                 fileNames[files[i]] = fileID;
@@ -912,11 +902,11 @@ namespace DotNetNdsToolkit
             // Log Base 2 (Cartridge size / 128KB) = DeviceCapacity
             var deviceCapacity = (byte)Math.Ceiling(Math.Log(Math.Ceiling((double)totalFileSize / (128 * 1024)), 2));
             header.DeviceCapacity = deviceCapacity;
-            this.SetLength((long)(Math.Pow(2, deviceCapacity) * 128 * 1024));
+            RawData.SetLength((long)(Math.Pow(2, deviceCapacity) * 128 * 1024));
 
             // Header: always at 0x00
             // Note: Will rewrite header later to fix file references
-            await this.WriteAsync(0, await header.ReadAsync());
+            await RawData.WriteAsync(0, await header.ReadAsync());
 
             // ARM9 Binary: always at 0x4000
             header.FileArm9OverlayOffset = 0x4000;
@@ -929,7 +919,7 @@ namespace DotNetNdsToolkit
                 header.FileArm9OverlaySize = arm9Bin.Length;
             }
             var arm9End = header.FileArm9OverlayOffset + arm9Bin.Length;
-            await this.WriteAsync(header.FileArm9OverlayOffset, arm9Bin);
+            await RawData.WriteAsync(header.FileArm9OverlayOffset, arm9Bin);
             nextFileOffset = arm9End + await WritePadding(arm9End, arm9Bin.Length);
 
             // ARM9 Overlay Table
@@ -939,7 +929,7 @@ namespace DotNetNdsToolkit
             for (int i = 0; i < overlay9.Count; i += 1)
             {
                 var bytes = overlay9[i].GetBytes();
-                await this.WriteAsync(header.FileArm9OverlayOffset + 32 * i, bytes);
+                await RawData.WriteAsync(header.FileArm9OverlayOffset + 32 * i, bytes);
                 overlay9Length += 32;
             }
             header.FileArm9OverlaySize = overlay9Length;
@@ -960,7 +950,7 @@ namespace DotNetNdsToolkit
             header.FileArm7OverlayOffset = nextFileOffset;
             header.FileArm7OverlaySize = arm7Bin.Length;
             var arm7End = header.FileArm7OverlayOffset + arm7Bin.Length;
-            await this.WriteAsync(header.FileArm7OverlayOffset, arm7Bin);
+            await RawData.WriteAsync(header.FileArm7OverlayOffset, arm7Bin);
             nextFileOffset = arm7End + await WritePadding(arm7End, arm7Bin.Length);
 
             // ARM7 Overlay Table
@@ -970,7 +960,7 @@ namespace DotNetNdsToolkit
             for (int i = 0; i < overlay7.Count; i += 1)
             {
                 var bytes = overlay7[i].GetBytes();
-                await this.WriteAsync(header.FileArm7OverlayOffset + 32 * i, bytes);
+                await RawData.WriteAsync(header.FileArm7OverlayOffset + 32 * i, bytes);
                 overlay7Length += bytes.Length;
             }
             header.FileArm7OverlaySize = overlay7Length;
@@ -986,19 +976,19 @@ namespace DotNetNdsToolkit
             }
 
             // Write FNT
-            await this.WriteAsync(nextFileOffset, fntSection.ToArray());
+            await RawData.WriteAsync(nextFileOffset, fntSection.ToArray());
             nextFileOffset += fntSection.Count + await WritePadding(nextFileOffset + fntSection.Count, fntSection.Count);
 
             // Write dummy fat, since it's still being made
             // -- Calculate total fat size (fat already contains overlays, just need to add nitrofs files)
             var fatSize = fat.Count + filesAlloc.Keys.Count * 8;
             var fatIndex = nextFileOffset;
-            await this.WriteAsync(fatIndex, new byte[fatSize]);
+            await RawData.WriteAsync(fatIndex, new byte[fatSize]);
             nextFileOffset += fatSize + await WritePadding(fatIndex, fatSize);
 
             // Write banner            
             header.IconOffset = nextFileOffset;
-            await this.WriteAsync(header.IconOffset, banner);
+            await RawData.WriteAsync(header.IconOffset, banner);
             nextFileOffset += header.IconLength + await WritePadding(header.IconOffset + header.IconLength, header.IconLength);
 
             // Write Files
@@ -1008,13 +998,24 @@ namespace DotNetNdsToolkit
             }
 
             // Write the actual fat
-            await this.WriteAsync(fatIndex, fat.ToArray());
+            await RawData.WriteAsync(fatIndex, fat.ToArray());
 
             // Write the updated header
-            await this.WriteAsync(0, await header.ReadAsync());
+            await RawData.WriteAsync(0, await header.ReadAsync());
 
-            await base.Save(filename, provider);
+            await RawData.Save(filename, provider);
+
+            FileSaved?.Invoke(this, new EventArgs());
         }
+
+        public async Task Save(IFileSystem provider)
+        {
+            await Save(this.Filename, provider);
+        }
+
+        public string GetDefaultExtension() => "*.nds";
+
+        public IEnumerable<string> GetSupportedExtensions() => new[] { "*.nds", "*.srl" };
 
         /// <summary>
         /// Analyzes the layout of the sections of the ROM
@@ -1097,7 +1098,7 @@ namespace DotNetNdsToolkit
             var output = new List<OverlayTableEntry>();
             for (int i = Header.FileArm9OverlayOffset; i < Header.FileArm9OverlayOffset + Header.FileArm9OverlaySize; i += 32)
             {
-                output.Add(new OverlayTableEntry(await ReadAsync(i, 32)));
+                output.Add(new OverlayTableEntry(await RawData.ReadAsync(i, 32)));
             }
             return output;
         }
@@ -1107,7 +1108,7 @@ namespace DotNetNdsToolkit
             var output = new List<OverlayTableEntry>();
             for (int i = Header.FileArm7OverlayOffset; i < Header.FileArm7OverlayOffset + Header.FileArm7OverlaySize; i += 32)
             {
-                output.Add(new OverlayTableEntry(await ReadAsync(i, 32)));
+                output.Add(new OverlayTableEntry(await RawData.ReadAsync(i, 32)));
             }
             return output;
         }
@@ -1117,7 +1118,7 @@ namespace DotNetNdsToolkit
             var output = new List<FileAllocationEntry>();
             for (int i = Header.FileAllocationTableOffset; i < Header.FileAllocationTableOffset + Header.FileAllocationTableSize; i += 8)
             {
-                output.Add(new FileAllocationEntry(await this.ReadInt32Async(i), await this.ReadInt32Async(i + 4)));
+                output.Add(new FileAllocationEntry(await RawData.ReadInt32Async(i), await RawData.ReadInt32Async(i + 4)));
             }
             return output;
         }
@@ -1125,14 +1126,14 @@ namespace DotNetNdsToolkit
         private async Task<FilenameTable> ParseFNT()
         {
             // Read the raw structures
-            var root = new DirectoryMainTable(await ReadAsync(Header.FilenameTableOffset, 8));
+            var root = new DirectoryMainTable(await RawData.ReadAsync(Header.FilenameTableOffset, 8));
             var rootDirectories = new List<DirectoryMainTable>();
 
             // - In the root directory only, ParentDir means the number of directories
             for (int i = 1; i < root.ParentDir; i += 1)
             {
                 var offset = Header.FilenameTableOffset + i * 8;
-                rootDirectories.Add(new DirectoryMainTable(await ReadAsync(offset, 8)));
+                rootDirectories.Add(new DirectoryMainTable(await RawData.ReadAsync(offset, 8)));
             }
 
             // Build the filename table
@@ -1146,21 +1147,21 @@ namespace DotNetNdsToolkit
         {
             var subTables = new List<FNTSubTable>();
             var offset = rootSubTableOffset + Header.FilenameTableOffset;
-            var length = await ReadAsync(offset);
+            var length = await RawData.ReadAsync(offset);
             while (length > 0)
             {
                 if (length > 128)
                 {
                     // Directory
-                    var name = await this.ReadStringAsync(offset + 1, length & 0x7F, Encoding.ASCII);
-                    var subDirID = await this.ReadUInt16Async(offset + 1 + (length & 0x7F));
+                    var name = await RawData.ReadStringAsync(offset + 1, length & 0x7F, Encoding.ASCII);
+                    var subDirID = await RawData.ReadUInt16Async(offset + 1 + (length & 0x7F));
                     subTables.Add(new FNTSubTable { Length = length, Name = name, SubDirectoryID = subDirID });
                     offset += (length & 0x7F) + 1 + 2;
                 }
                 else if (length < 128)
                 {
                     // File
-                    var name = await this.ReadStringAsync(offset + 1, length, Encoding.ASCII);
+                    var name = await RawData.ReadStringAsync(offset + 1, length, Encoding.ASCII);
                     subTables.Add(new FNTSubTable { Length = length, Name = name, ParentFileID = parentFileID });
                     parentFileID += 1;
                     offset += length + 1;
@@ -1170,7 +1171,7 @@ namespace DotNetNdsToolkit
                     throw new FormatException($"Subtable length of 0x80 is not supported and likely invalid.  Root subtable offset: {rootSubTableOffset}");
                 }
 
-                length = await ReadAsync(offset);
+                length = await RawData.ReadAsync(offset);
             }
             return subTables;
         }
@@ -1201,7 +1202,7 @@ namespace DotNetNdsToolkit
         /// <param name="filenames">Dicitonary matching paths to file indexes. </param>
         private FilenameTable BuildCurrentFNTChild(string path, IDictionary<string, int> filenames, ref UInt16 directoryCount, ref int fileCount)
         {
-            var provider = this as IIOProvider;
+            var provider = this as IFileSystem;
 
             var table = new FilenameTable();
             table.Name = Path.GetFileName(path);
@@ -1326,7 +1327,7 @@ namespace DotNetNdsToolkit
         /// </summary>
         private bool CheckNeedsArm9Footer()
         {
-            return this.ReadUInt32(Header.Arm9RomOffset + Header.Arm9Size) == 0xDEC00621;
+            return RawData.ReadUInt32(Header.Arm9RomOffset + Header.Arm9Size) == 0xDEC00621;
         }
 
         /// <summary>
@@ -1334,10 +1335,10 @@ namespace DotNetNdsToolkit
         /// </summary>
         /// <param name="targetDir">Directory in the given I/O provider (<paramref name="provider"/>) to store the extracted files</param>
         /// <param name="provider">The I/O provider to which the files should be written</param>
-        public async Task Unpack(string targetDir, IIOProvider provider)
+        public async Task Unpack(string targetDir, IFileSystem provider)
         {
             // Get the files
-            var files = (this as IIOProvider).GetFiles("/", "*", false);
+            var files = (this as IFileSystem).GetFiles("/", "*", false);
 
             // Set progress
             TotalFileCount = files.Length;
@@ -1367,19 +1368,12 @@ namespace DotNetNdsToolkit
                             }
                         }
                     }
-                    provider.WriteAllBytes(dest, (this as IIOProvider).ReadAllBytes(currentItem));
+                    provider.WriteAllBytes(dest, (this as IFileSystem).ReadAllBytes(currentItem));
                     Interlocked.Increment(ref _extractedFileCount);
                     ReportProgressChanged();
                 });
-
-                if (IsThreadSafe)
-                {
-                    extractionTasks.Add(currentTask);
-                }
-                else
-                {
-                    await currentTask;
-                }
+                
+                extractionTasks.Add(currentTask);
             }
             await Task.WhenAll(extractionTasks);
         }
@@ -1486,13 +1480,13 @@ namespace DotNetNdsToolkit
 
         #endregion
 
-        #region IIOProvider Implementation
+        #region IFileSystem Implementation
         /// <summary>
         /// Keeps track of files that have been logically deleted
         /// </summary>
         private List<string> BlacklistedPaths => new List<string>();
 
-        string IIOProvider.WorkingDirectory
+        string IFileSystem.WorkingDirectory
         {
             get
             {
@@ -1513,6 +1507,7 @@ namespace DotNetNdsToolkit
                 _workingDirectoryParts = GetPathParts(value);
             }
         }
+        
         private string[] _workingDirectoryParts;
 
         protected string[] GetPathParts(string path)
@@ -1547,9 +1542,9 @@ namespace DotNetNdsToolkit
             return parts.ToArray();
         }
 
-        void IIOProvider.ResetWorkingDirectory()
+        void IFileSystem.ResetWorkingDirectory()
         {
-            (this as IIOProvider).WorkingDirectory = "/";
+            (this as IFileSystem).WorkingDirectory = "/";
         }
 
         private string FixPath(string path)
@@ -1563,7 +1558,7 @@ namespace DotNetNdsToolkit
             }
             else
             {
-                return Path.Combine((this as IIOProvider).WorkingDirectory, path);
+                return Path.Combine((this as IFileSystem).WorkingDirectory, path);
             }
         }
 
@@ -1654,14 +1649,14 @@ namespace DotNetNdsToolkit
             }
         }
 
-        long IIOProvider.GetFileLength(string filename)
+        long IFileSystem.GetFileLength(string filename)
         {
             return GetFATEntry(filename).Value.Length;
         }
 
-        bool IIOProvider.FileExists(string filename)
+        bool IFileSystem.FileExists(string filename)
         {
-            return (CurrentIOProvider != null && CurrentIOProvider.FileExists(GetVirtualPath(filename)))
+            return (CurrentFileSystem != null && CurrentFileSystem.FileExists(GetVirtualPath(filename)))
                 || GetFATEntry(filename, false).HasValue;
         }
 
@@ -1702,16 +1697,16 @@ namespace DotNetNdsToolkit
             }
         }
 
-        bool IIOProvider.DirectoryExists(string path)
+        bool IFileSystem.DirectoryExists(string path)
         {
             return !BlacklistedPaths.Contains(FixPath(path))
                     &&
-                    ((CurrentIOProvider != null && CurrentIOProvider.DirectoryExists(GetVirtualPath(path)))
+                    ((CurrentFileSystem != null && CurrentFileSystem.DirectoryExists(GetVirtualPath(path)))
                         || DirectoryExists(GetPathParts(path))
                     );
         }
 
-        void IIOProvider.CreateDirectory(string path)
+        void IFileSystem.CreateDirectory(string path)
         {
             var fixedPath = FixPath(path);
             if (BlacklistedPaths.Contains(fixedPath))
@@ -1719,9 +1714,9 @@ namespace DotNetNdsToolkit
                 BlacklistedPaths.Remove(fixedPath);
             }
 
-            if (!(this as IIOProvider).DirectoryExists(fixedPath))
+            if (!(this as IFileSystem).DirectoryExists(fixedPath))
             {
-                CurrentIOProvider?.CreateDirectory(GetVirtualPath(fixedPath));
+                CurrentFileSystem?.CreateDirectory(GetVirtualPath(fixedPath));
             }
         }
 
@@ -1745,7 +1740,7 @@ namespace DotNetNdsToolkit
             return output;
         }
 
-        string[] IIOProvider.GetFiles(string path, string searchPattern, bool topDirectoryOnly)
+        string[] IFileSystem.GetFiles(string path, string searchPattern, bool topDirectoryOnly)
         {
             var output = new List<string>();
             var parts = GetPathParts(path);
@@ -1761,9 +1756,9 @@ namespace DotNetNdsToolkit
                     output.Add("/y9.bin");
                     if (!topDirectoryOnly)
                     {
-                        output.AddRange((this as IIOProvider).GetFiles("/overlay", searchPattern, topDirectoryOnly));
-                        output.AddRange((this as IIOProvider).GetFiles("/overlay7", searchPattern, topDirectoryOnly));
-                        output.AddRange((this as IIOProvider).GetFiles("/" + DataPath, searchPattern, topDirectoryOnly));
+                        output.AddRange((this as IFileSystem).GetFiles("/overlay", searchPattern, topDirectoryOnly));
+                        output.AddRange((this as IFileSystem).GetFiles("/overlay7", searchPattern, topDirectoryOnly));
+                        output.AddRange((this as IFileSystem).GetFiles("/" + DataPath, searchPattern, topDirectoryOnly));
                     }
                     return output.ToArray();
                 case "overlay":
@@ -1782,9 +1777,9 @@ namespace DotNetNdsToolkit
 
                     // Apply shadowed files
                     var virtualPath = GetVirtualPath(parts[0].ToLower());
-                    if (CurrentIOProvider != null && CurrentIOProvider.DirectoryExists(virtualPath))
+                    if (CurrentFileSystem != null && CurrentFileSystem.DirectoryExists(virtualPath))
                     {
-                        foreach (var item in CurrentIOProvider.GetFiles(virtualPath, "overlay_*.bin", true))
+                        foreach (var item in CurrentFileSystem.GetFiles(virtualPath, "overlay_*.bin", true))
                         {
                             if (searchPatternRegex.IsMatch(Path.GetFileName(item)))
                             {
@@ -1813,9 +1808,9 @@ namespace DotNetNdsToolkit
 
                     // Apply shadowed files
                     var virtualPath7 = GetVirtualPath(parts[0].ToLower());
-                    if (CurrentIOProvider != null && CurrentIOProvider.DirectoryExists(virtualPath7))
+                    if (CurrentFileSystem != null && CurrentFileSystem.DirectoryExists(virtualPath7))
                     {
-                        foreach (var item in CurrentIOProvider.GetFiles(virtualPath7, "overlay_*.bin", true))
+                        foreach (var item in CurrentFileSystem.GetFiles(virtualPath7, "overlay_*.bin", true))
                         {
                             if (searchPatternRegex.IsMatch(Path.GetFileName(item)))
                             {
@@ -1857,9 +1852,9 @@ namespace DotNetNdsToolkit
 
                         // Apply shadowed files
                         var virtualPathData = GetVirtualPath(path);
-                        if (CurrentIOProvider != null && CurrentIOProvider.DirectoryExists(virtualPathData))
+                        if (CurrentFileSystem != null && CurrentFileSystem.DirectoryExists(virtualPathData))
                         {
-                            foreach (var item in CurrentIOProvider.GetFiles(virtualPathData, searchPattern, topDirectoryOnly))
+                            foreach (var item in CurrentFileSystem.GetFiles(virtualPathData, searchPattern, topDirectoryOnly))
                             {
                                 var filePath = "/" + FileSystem.MakeRelativePath(item, VirtualPath);
                                 if (!output.Contains(filePath))
@@ -1878,7 +1873,7 @@ namespace DotNetNdsToolkit
             return output.ToArray();
         }
 
-        string[] IIOProvider.GetDirectories(string path, bool topDirectoryOnly)
+        string[] IFileSystem.GetDirectories(string path, bool topDirectoryOnly)
         {
             var output = new List<string>();
             var parts = GetPathParts(path);
@@ -1910,9 +1905,9 @@ namespace DotNetNdsToolkit
 
                         // Apply shadowed files
                         var virtualPathData = GetVirtualPath(path);
-                        if (CurrentIOProvider != null && CurrentIOProvider.DirectoryExists(virtualPathData))
+                        if (CurrentFileSystem != null && CurrentFileSystem.DirectoryExists(virtualPathData))
                         {
-                            foreach (var item in CurrentIOProvider.GetDirectories(virtualPathData, topDirectoryOnly))
+                            foreach (var item in CurrentFileSystem.GetDirectories(virtualPathData, topDirectoryOnly))
                             {
                                 var filePath = "/" + FileSystem.MakeRelativePath(item, VirtualPath);
                                 if (!output.Contains(filePath))
@@ -1932,13 +1927,13 @@ namespace DotNetNdsToolkit
             {
                 foreach (var item in output)
                 {
-                    output.AddRange((this as IIOProvider).GetDirectories(item, topDirectoryOnly));
+                    output.AddRange((this as IFileSystem).GetDirectories(item, topDirectoryOnly));
                 }
             }
             return output.ToArray();
         }
 
-        byte[] IIOProvider.ReadAllBytes(string filename)
+        byte[] IFileSystem.ReadAllBytes(string filename)
         {
             var fixedPath = FixPath(filename);
             if (BlacklistedPaths.Contains(fixedPath))
@@ -1948,24 +1943,24 @@ namespace DotNetNdsToolkit
             else
             {
                 var virtualPath = GetVirtualPath(fixedPath);
-                if (CurrentIOProvider != null && CurrentIOProvider.FileExists(virtualPath))
+                if (CurrentFileSystem != null && CurrentFileSystem.FileExists(virtualPath))
                 {
-                    return CurrentIOProvider.ReadAllBytes(virtualPath);
+                    return CurrentFileSystem.ReadAllBytes(virtualPath);
                 }
                 else
                 {
                     var entry = GetFATEntry(filename);
-                    return Read(entry.Value.Offset, entry.Value.Length);
+                    return RawData.Read(entry.Value.Offset, entry.Value.Length);
                 }
             }
         }
 
-        string IIOProvider.ReadAllText(string filename)
+        string IFileSystem.ReadAllText(string filename)
         {
-            return Encoding.UTF8.GetString((this as IIOProvider).ReadAllBytes(filename));
+            return Encoding.UTF8.GetString((this as IFileSystem).ReadAllBytes(filename));
         }
 
-        void IIOProvider.WriteAllBytes(string filename, byte[] data)
+        void IFileSystem.WriteAllBytes(string filename, byte[] data)
         {
             var fixedPath = FixPath(filename);
             if (BlacklistedPaths.Contains(fixedPath))
@@ -1973,20 +1968,20 @@ namespace DotNetNdsToolkit
                 BlacklistedPaths.Remove(fixedPath);
             }
 
-            CurrentIOProvider?.WriteAllBytes(GetVirtualPath(filename), data);
+            CurrentFileSystem?.WriteAllBytes(GetVirtualPath(filename), data);
         }
 
-        void IIOProvider.WriteAllText(string filename, string data)
+        void IFileSystem.WriteAllText(string filename, string data)
         {
-            (this as IIOProvider).WriteAllBytes(filename, Encoding.UTF8.GetBytes(data));
+            (this as IFileSystem).WriteAllBytes(filename, Encoding.UTF8.GetBytes(data));
         }
 
-        void IIOProvider.CopyFile(string sourceFilename, string destinationFilename)
+        void IFileSystem.CopyFile(string sourceFilename, string destinationFilename)
         {
-            (this as IIOProvider).WriteAllBytes(destinationFilename, (this as IIOProvider).ReadAllBytes(sourceFilename));
+            (this as IFileSystem).WriteAllBytes(destinationFilename, (this as IFileSystem).ReadAllBytes(sourceFilename));
         }
 
-        void IIOProvider.DeleteFile(string filename)
+        void IFileSystem.DeleteFile(string filename)
         {
             var fixedPath = FixPath(filename);
             if (!BlacklistedPaths.Contains(fixedPath))
@@ -1995,13 +1990,13 @@ namespace DotNetNdsToolkit
             }
 
             var virtualPath = GetVirtualPath(filename);
-            if (CurrentIOProvider != null && CurrentIOProvider.FileExists(virtualPath))
+            if (CurrentFileSystem != null && CurrentFileSystem.FileExists(virtualPath))
             {
-                CurrentIOProvider.DeleteFile(virtualPath);
+                CurrentFileSystem.DeleteFile(virtualPath);
             }
         }
 
-        void IIOProvider.DeleteDirectory(string path)
+        void IFileSystem.DeleteDirectory(string path)
         {
             var fixedPath = FixPath(path);
             if (!BlacklistedPaths.Contains(fixedPath))
@@ -2010,90 +2005,91 @@ namespace DotNetNdsToolkit
             }
 
             var virtualPath = GetVirtualPath(path);
-            if (CurrentIOProvider != null && CurrentIOProvider.FileExists(virtualPath))
+            if (CurrentFileSystem != null && CurrentFileSystem.FileExists(virtualPath))
             {
-                CurrentIOProvider.DeleteFile(virtualPath);
+                CurrentFileSystem.DeleteFile(virtualPath);
             }
         }
 
-        string IIOProvider.GetTempFilename()
+        string IFileSystem.GetTempFilename()
         {
             var path = "/temp/files/" + Guid.NewGuid().ToString();
-            (this as IIOProvider).WriteAllBytes(path, new byte[] { });
+            (this as IFileSystem).WriteAllBytes(path, new byte[] { });
             return path;
         }
 
-        string IIOProvider.GetTempDirectory()
+        string IFileSystem.GetTempDirectory()
         {
             var path = "/temp/dirs/" + Guid.NewGuid().ToString();
-            (this as IIOProvider).CreateDirectory(path);
+            (this as IFileSystem).CreateDirectory(path);
             return path;
         }
 
-        Stream IIOProvider.OpenFile(string filename)
+        Stream IFileSystem.OpenFile(string filename)
         {
-            if (CurrentIOProvider != null)
+            if (CurrentFileSystem != null)
             {
                 throw new NotSupportedException("Cannot open a file as a stream without an IO provider.");
             }
 
             var virtualPath = GetVirtualPath(filename);
-            if (!CurrentIOProvider.DirectoryExists(virtualPath))
+            if (!CurrentFileSystem.DirectoryExists(virtualPath))
             {
-                CurrentIOProvider.CreateDirectory(virtualPath);
+                CurrentFileSystem.CreateDirectory(virtualPath);
             }
-            CurrentIOProvider.WriteAllBytes(virtualPath, (this as IIOProvider).ReadAllBytes(filename));
+            CurrentFileSystem.WriteAllBytes(virtualPath, (this as IFileSystem).ReadAllBytes(filename));
 
-            return CurrentIOProvider.OpenFile(filename);
+            return CurrentFileSystem.OpenFile(filename);
         }
 
-        Stream IIOProvider.OpenFileReadOnly(string filename)
+        Stream IFileSystem.OpenFileReadOnly(string filename)
         {
-            if (CurrentIOProvider != null)
+            if (CurrentFileSystem != null)
             {
                 throw new NotSupportedException("Cannot open a file as a stream without an IO provider.");
             }
 
             var virtualPath = GetVirtualPath(filename);
-            if (!CurrentIOProvider.DirectoryExists(virtualPath))
+            if (!CurrentFileSystem.DirectoryExists(virtualPath))
             {
-                CurrentIOProvider.CreateDirectory(virtualPath);
+                CurrentFileSystem.CreateDirectory(virtualPath);
             }
-            CurrentIOProvider.WriteAllBytes(virtualPath, (this as IIOProvider).ReadAllBytes(filename));
+            CurrentFileSystem.WriteAllBytes(virtualPath, (this as IFileSystem).ReadAllBytes(filename));
 
-            return CurrentIOProvider.OpenFileReadOnly(filename);
+            return CurrentFileSystem.OpenFileReadOnly(filename);
         }
 
-        Stream IIOProvider.OpenFileWriteOnly(string filename)
+        Stream IFileSystem.OpenFileWriteOnly(string filename)
         {
-            if (CurrentIOProvider != null)
+            if (CurrentFileSystem != null)
             {
                 throw new NotSupportedException("Cannot open a file as a stream without an IO provider.");
             }
 
             var virtualPath = GetVirtualPath(filename);
-            if (!CurrentIOProvider.DirectoryExists(virtualPath))
+            if (!CurrentFileSystem.DirectoryExists(virtualPath))
             {
-                CurrentIOProvider.CreateDirectory(virtualPath);
+                CurrentFileSystem.CreateDirectory(virtualPath);
             }
-            CurrentIOProvider.WriteAllBytes(virtualPath, (this as IIOProvider).ReadAllBytes(filename));
+            CurrentFileSystem.WriteAllBytes(virtualPath, (this as IFileSystem).ReadAllBytes(filename));
 
-            return CurrentIOProvider.OpenFileWriteOnly(filename);
+            return CurrentFileSystem.OpenFileWriteOnly(filename);
         }
         #endregion
 
         #region IDisposable Implementation
 
-        protected override void Dispose(bool disposing)
+        public void Dispose()
         {
-            base.Dispose(disposing);
+            RawData.Dispose();
 
-            if (!string.IsNullOrEmpty(VirtualPath) && CurrentIOProvider.DirectoryExists(VirtualPath) && DisposeVirtualPath)
+            if (!string.IsNullOrEmpty(VirtualPath) && CurrentFileSystem.DirectoryExists(VirtualPath) && DisposeVirtualPath)
             {
-                CurrentIOProvider.DeleteDirectory(VirtualPath);
+                CurrentFileSystem.DeleteDirectory(VirtualPath);
                 VirtualPath = null;
             }
-        }        
+        }
+
         #endregion
     }
 }
