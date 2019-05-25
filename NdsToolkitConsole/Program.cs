@@ -1,5 +1,6 @@
 ﻿using DotNetNdsToolkit;
 using SkyEditor.Core.IO;
+using SkyEditor.IO.FileSystem;
 using System;
 using System.IO;
 
@@ -54,15 +55,15 @@ namespace NdsToolkitConsole
                     file.DataPath = dataOverride;
                 }
 
-                file.OpenFile(filename, new PhysicalIOProvider()).Wait();
+                file.OpenFile(filename, new PhysicalFileSystem()).Wait();
                 
                 if (File.Exists(filename))
                 {
-                    file.Unpack(dir, new PhysicalIOProvider()).Wait();
+                    file.Unpack(dir, new PhysicalFileSystem()).Wait();
                 }
                 else if (Directory.Exists(filename))
                 {
-                    file.Save(dir, new PhysicalIOProvider()).Wait();
+                    file.Save(dir, new PhysicalFileSystem()).Wait();
                 }
             }                     
         }
