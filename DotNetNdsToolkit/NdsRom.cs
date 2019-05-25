@@ -650,6 +650,7 @@ namespace DotNetNdsToolkit
 
         public NdsRom()
         {
+            RawData = new GenericFile();
             RawData.EnableInMemoryLoad = true;
             (this as IFileSystem).ResetWorkingDirectory();
             DataPath = "data";
