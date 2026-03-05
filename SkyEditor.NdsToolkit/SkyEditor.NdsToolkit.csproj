@@ -5,6 +5,8 @@
 	<Version>3.0.0</Version>
 	<Nullable>enable</Nullable>
 	<LangVersion>14</LangVersion>
+	<Description>Library for opening and editing Nintendo DS ROM files</Description>
+	<RepositoryUrl>https://github.com/evandixon/DotNetNdsToolkit</RepositoryUrl>
   </PropertyGroup>
 
   <ItemGroup>
