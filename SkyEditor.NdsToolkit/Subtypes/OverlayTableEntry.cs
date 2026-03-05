@@ -1,7 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 
-namespace DotNetNdsToolkit.Subtypes
+namespace SkyEditor.NdsToolkit.Subtypes
 {
     /// <summary>
     /// A single entry in an overlay table

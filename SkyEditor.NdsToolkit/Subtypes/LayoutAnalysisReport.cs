@@ -2,7 +2,7 @@
 using System.Linq;
 using System.Text;
 
-namespace DotNetNdsToolkit.Subtypes
+namespace SkyEditor.NdsToolkit.Subtypes
 {
     public class LayoutAnalysisReport
     {

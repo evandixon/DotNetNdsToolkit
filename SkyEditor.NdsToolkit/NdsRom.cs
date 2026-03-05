@@ -1,6 +1,6 @@
-﻿using DotNetNdsToolkit.Subtypes;
-using SkyEditor.IO.Binary;
+﻿using SkyEditor.IO.Binary;
 using SkyEditor.IO.FileSystem;
+using SkyEditor.NdsToolkit.Subtypes;
 using SkyEditor.Utilities.AsyncFor;
 using System;
 using System.Collections.Concurrent;
@@ -11,9 +11,9 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using Range = DotNetNdsToolkit.Subtypes.Range;
+using Range = SkyEditor.NdsToolkit.Subtypes.Range;
 
-namespace DotNetNdsToolkit
+namespace SkyEditor.NdsToolkit
 {
     /// <summary>
     /// A ROM for the Nintendo DS.

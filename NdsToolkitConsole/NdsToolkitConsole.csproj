@@ -9,7 +9,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\DotNetNdsToolkit\DotNetNdsToolkit.csproj" />
+    <ProjectReference Include="..\SkyEditor.NdsToolkit\SkyEditor.NdsToolkit.csproj" />
   </ItemGroup>
 
 </Project>

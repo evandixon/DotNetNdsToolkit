@@ -1,8 +1,7 @@
-﻿using DotNetNdsToolkit.Subtypes;
-using Microsoft.VisualStudio.TestTools.UnitTesting;
-using SkyEditor.IO.FileSystem;
+﻿using Microsoft.VisualStudio.TestTools.UnitTesting;
+using SkyEditor.NdsToolkit.Subtypes;
 
-namespace DotNetNdsToolkit.Tests
+namespace SkyEditor.NdsToolkit.Tests
 {
     [TestClass]
     public class NdsRomTestsInternal

@@ -1,6 +1,6 @@
 ﻿using System;
 
-namespace DotNetNdsToolkit.Subtypes
+namespace SkyEditor.NdsToolkit.Subtypes
 {
     public struct DirectoryMainTable
     {

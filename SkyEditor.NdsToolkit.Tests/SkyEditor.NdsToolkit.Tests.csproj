@@ -1,9 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>    
-    <TargetFramework>net10.0</TargetFramework>    
-    <AssemblyName>DotNetNdsToolkit.Tests</AssemblyName>    
-    <RootNamespace>DotNetNdsToolkit.Tests</RootNamespace>
+    <TargetFramework>net10.0</TargetFramework>
 	<Nullable>enable</Nullable>
   </PropertyGroup>
 
@@ -14,7 +12,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\DotNetNdsToolkit\DotNetNdsToolkit.csproj" />
+    <ProjectReference Include="..\SkyEditor.NdsToolkit\SkyEditor.NdsToolkit.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -24,10 +22,6 @@
     <None Update="Resources\eosu.nds">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
-  </ItemGroup>
-
-  <ItemGroup>
-    <Service Include="{82a7f48d-3b50-4b1e-b82e-3ada8210c358}" />
   </ItemGroup>
 
 </Project>

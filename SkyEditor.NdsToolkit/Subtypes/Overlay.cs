@@ -1,4 +1,4 @@
-﻿namespace DotNetNdsToolkit.Subtypes
+﻿namespace SkyEditor.NdsToolkit.Subtypes
 {
     /// <summary>
     /// Represents an entry in the overlay table, in addition to the overlay itself

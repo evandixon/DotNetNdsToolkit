@@ -8,7 +8,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 
-namespace DotNetNdsToolkit.Subtypes
+namespace SkyEditor.NdsToolkit.Subtypes
 {
     public class NdsFileSystem : IFileSystem, IDisposable
     {

@@ -1,4 +1,4 @@
-﻿namespace DotNetNdsToolkit.Subtypes
+﻿namespace SkyEditor.NdsToolkit.Subtypes
 {
     public struct Range
     {

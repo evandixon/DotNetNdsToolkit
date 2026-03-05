@@ -1,4 +1,4 @@
-﻿namespace DotNetNdsToolkit.Subtypes
+﻿namespace SkyEditor.NdsToolkit.Subtypes
 {
     /// <summary>
     /// A single entry in the FAT

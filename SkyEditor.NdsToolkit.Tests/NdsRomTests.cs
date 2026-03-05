@@ -1,14 +1,11 @@
-using System;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
-using System.IO;
-using System.Threading.Tasks;
+using System;
 using System.Collections.Concurrent;
+using System.IO;
 using System.Linq;
-using SkyEditor.IO.FileSystem;
-using SkyEditor.Utilities.AsyncFor;
-using SkyEditor.IO.Binary;
+using System.Threading.Tasks;
 
-namespace DotNetNdsToolkit.Tests
+namespace SkyEditor.NdsToolkit.Tests
 {
     [TestClass]
     public class NdsRomTests

@@ -2,7 +2,7 @@
 using System;
 using System.Text;
 
-namespace DotNetNdsToolkit.Subtypes
+namespace SkyEditor.NdsToolkit.Subtypes
 {
     /// <summary>
     /// The NDS header
