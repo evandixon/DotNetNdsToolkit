@@ -1,825 +1,260 @@
-﻿using SkyEditor.Core.IO;
-using SkyEditor.Core.Utilities;
-using System;
-using System.Collections.Generic;
-using System.Text;
-using System.IO;
-using System.Threading.Tasks;
-using System.Linq;
-using System.Text.RegularExpressions;
-using System.Threading;
-using System.Collections.Concurrent;
-using SkyEditor.Core.TestComponents;
-using SkyEditor.Core.IO.PluginInfrastructure;
-using SkyEditor.Utilities.AsyncFor;
+﻿using DotNetNdsToolkit.Subtypes;
+using SkyEditor.IO.Binary;
 using SkyEditor.IO.FileSystem;
+using SkyEditor.Utilities.AsyncFor;
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.IO;
+using System.IO.MemoryMappedFiles;
+using System.Linq;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using Range = DotNetNdsToolkit.Subtypes.Range;
 
 namespace DotNetNdsToolkit
 {
     /// <summary>
-    /// A ROM for the Nintendo DS
+    /// A ROM for the Nintendo DS.
+    /// Use <see cref="LoadFromFile(IReadOnlyBinaryDataAccessor)"/> or <see cref="LoadFromDirectory(string, IFileSystem)"/> to create an instance.
+    /// Use <see cref="NdsRom.FileSystem"/> to interact with the files inside, <see cref="NdsRom.Unpack(string)"/> to extract files, or <see cref="NdsRom.Save(string)"/> to build a new ROM from any changes that have been made.
     /// </summary>
-    public class NdsRom : ICreatableFile, IOnDisk, IOpenableFile, ISavable, ISavableAs, IReportProgress, IFileSystem, IDisposable, IDetectableFileType
+    public class NdsRom : IDisposable
     {
-
-        #region Static Methods
         /// <summary>
-        /// Gets a regular expression for the given search pattern for use with <see cref="GetFiles(string, string, bool)"/>.  Do not provide asterisks.
+        /// Loads a ROM from a file
         /// </summary>
-        private static StringBuilder GetFileSearchRegexQuestionMarkOnly(string searchPattern)
+        /// <param name="data">The raw data of the ROM. Create a <see cref="BinaryFile"/> containing your data if you're unsure what to provide.</param>
+        public static async Task<NdsRom> LoadFromFile(IReadOnlyBinaryDataAccessor data, bool disposeData = false)
         {
-            var parts = searchPattern.Split('?');
-            var regexString = new StringBuilder();
-            foreach (var item in parts)
-            {
-                regexString.Append(Regex.Escape(item));
-                if (item != parts[parts.Length - 1])
-                {
-                    regexString.Append(".?");
-                }
-            }
-            return regexString;
+            var virtualFileSystem = PhysicalFileSystem.Instance;
+            var virtualPath = Path.Combine(Path.GetTempPath(), "SkyEditor.IO.NDS", Guid.NewGuid().ToString());
+
+            var rom = new NdsRom(data, disposeData, virtualPath, virtualFileSystem, true);
+
+            await rom.LoadRomHeader().ConfigureAwait(false);
+
+            return rom;
         }
 
         /// <summary>
-        /// Gets a regular expression for the given search pattern for use with <see cref="GetFiles(string, string, bool)"/>.
+        /// Loads a ROM from a file
         /// </summary>
-        /// <param name="searchPattern"></param>
-        /// <returns></returns>
-        private static string GetFileSearchRegex(string searchPattern)
+        /// <param name="filename">Path to the file to load</param>
+        /// <param name="fileSystem">File system containing the file to load. Use <see cref="LoadFromDirectory(string)"/> instead if you want your OS's file system.</param>
+        public static async Task<NdsRom> LoadFromFile(string filename, IFileSystem fileSystem)
         {
-            var asteriskParts = searchPattern.Split('*');
-            var regexString = new StringBuilder();
-
-            foreach (var part in asteriskParts)
-            {
-                if (string.IsNullOrEmpty(part))
-                {
-                    // Asterisk
-                    regexString.Append(".*");
-                }
-                else
-                {
-                    regexString.Append(GetFileSearchRegexQuestionMarkOnly(part));
-                }
-            }
-
-            return regexString.ToString();
-        }
-        #endregion
-
-        #region Child Classes
-
-        /// <summary>
-        /// A single entry in an overlay table
-        /// </summary>
-        private struct OverlayTableEntry
-        {
-            public OverlayTableEntry(byte[] rawData, int offset = 0)
-            {
-                OverlayID = BitConverter.ToInt32(rawData, offset + 0);
-                RamAddress = BitConverter.ToInt32(rawData, offset + 4);
-                RamSize = BitConverter.ToInt32(rawData, offset + 8);
-                BssSize = BitConverter.ToInt32(rawData, offset + 0xC);
-                StaticInitStart = BitConverter.ToInt32(rawData, offset + 0x10);
-                StaticInitEnd = BitConverter.ToInt32(rawData, offset + 0x14);
-                FileID = BitConverter.ToInt32(rawData, offset + 0x18);
-            }
-
-            public int OverlayID { get; set; }
-            public int RamAddress { get; set; }
-            public int RamSize { get; set; }
-            public int BssSize { get; set; }
-            public int StaticInitStart { get; set; }
-            public int StaticInitEnd { get; set; }
-            public int FileID { get; set; }
-
-            public byte[] GetBytes()
-            {
-                var output = new List<byte>();
-
-                output.AddRange(BitConverter.GetBytes(OverlayID));
-                output.AddRange(BitConverter.GetBytes(RamAddress));
-                output.AddRange(BitConverter.GetBytes(RamSize));
-                output.AddRange(BitConverter.GetBytes(BssSize));
-                output.AddRange(BitConverter.GetBytes(StaticInitStart));
-                output.AddRange(BitConverter.GetBytes(StaticInitEnd));
-                output.AddRange(BitConverter.GetBytes(FileID));
-
-                return output.ToArray();
-            }
-
-            public static bool operator ==(OverlayTableEntry a, OverlayTableEntry b)
-            {
-                return a.OverlayID == b.OverlayID && a.RamAddress == b.RamAddress && a.RamSize == b.RamSize && a.BssSize == b.BssSize && a.StaticInitStart == b.StaticInitStart && a.StaticInitEnd == b.StaticInitEnd && a.FileID == b.FileID;
-            }
-
-            public static bool operator !=(OverlayTableEntry a, OverlayTableEntry b)
-            {
-                return a.OverlayID != b.OverlayID || a.RamAddress != b.RamAddress || a.RamSize != b.RamSize || a.BssSize != b.BssSize || a.StaticInitStart != b.StaticInitStart || a.StaticInitEnd != b.StaticInitEnd || a.FileID != b.FileID;
-            }
-
-            public override bool Equals(object obj)
-            {
-                return obj is OverlayTableEntry && (OverlayTableEntry)obj == this;
-            }
-
-            public override int GetHashCode()
-            {
-                return OverlayID ^ RamAddress ^ RamSize ^ BssSize ^ StaticInitStart ^ StaticInitEnd ^ FileID;
-            }
+            var binaryFile = new BinaryFile(filename, fileSystem);
+            return await LoadFromFile(binaryFile, disposeData: true).ConfigureAwait(false);
         }
 
         /// <summary>
-        /// A single entry in the FAT
+        /// Loads a ROM from a file
         /// </summary>
-        private struct FileAllocationEntry
+        /// <param name="filename">Path to the file to load</param>
+        public static async Task<NdsRom> LoadFromFile(string filename)
         {
-            public FileAllocationEntry(int offset, int endAddress)
-            {
-                Offset = offset;
-                EndAddress = endAddress;
-            }
-
-            public int Offset { get; set; }
-            public int EndAddress { get; set; }
-            public int Length => EndAddress - Offset;
-        }
-
-        private struct DirectoryMainTable
-        {
-            public DirectoryMainTable(byte[] rawData)
-            {
-                SubTableOffset = BitConverter.ToUInt32(rawData, 0);
-                FirstSubTableFileID = BitConverter.ToUInt16(rawData, 4);
-                ParentDir = BitConverter.ToUInt16(rawData, 6);
-            }
-
-            public UInt32 SubTableOffset { get; set; }
-            public UInt16 FirstSubTableFileID { get; set; }
-            public UInt16 ParentDir { get; set; }
-        }
-
-        private struct FNTSubTable
-        {
-            public byte Length { get; set; }
-            public string Name { get; set; }
-            public UInt16 SubDirectoryID { get; set; } // Only used for directories
-            public UInt16 ParentFileID { get; set; }
-            public override string ToString()
-            {
-                return $"Length: {Length}, Sub-Directory ID: {SubDirectoryID}, Parent File ID: {ParentFileID}, Name: {Name}";
-            }
-        }
-
-        private class FilenameTable
-        {
-            public FilenameTable()
-            {
-                FileIndex = -1;
-                Children = new List<FilenameTable>();
-            }
-
-            public string Name { get; set; }
-
-            public int FileIndex { get; set; }
-
-            public UInt16 DirectoryID { get; set; }
-
-            public bool IsDirectory => FileIndex < 0;
-
-            public List<FilenameTable> Children { get; set; }
-
-            public override string ToString()
-            {
-                return Name;
-            }
+            return await LoadFromFile(filename, PhysicalFileSystem.Instance).ConfigureAwait(false);
         }
 
         /// <summary>
-        /// Represents an entry in the overlay table, in addition to the overlay itself
+        /// Loads a ROM from a file
         /// </summary>
-        private class Overlay
+        /// <param name="rawData">The raw binary data that was in the file to load</param>
+        public static async Task<NdsRom> LoadFromFile(byte[] rawData)
         {
-            public OverlayTableEntry TableEntry { get; set; }
-            public byte[] Data { get; set; }
+            var binaryFile = new BinaryFile(rawData);
+            return await LoadFromFile(binaryFile, true).ConfigureAwait(false);
         }
 
         /// <summary>
-        /// The NDS header
+        /// Loads a ROM from a file
         /// </summary>
-        public class NdsHeader : GenericFile
+        /// <param name="rawData">The raw binary data that was in the file to load</param>
+        public static async Task<NdsRom> LoadFromFile(Memory<byte> rawData)
         {
-
-            public string GameTitle
-            {
-                get
-                {
-                    return this.ReadString(0, 12, Encoding.ASCII);
-                }
-                set
-                {
-                    this.WriteString(0, Encoding.ASCII, value.PadRight(12, '\0').Substring(0, 12));
-                }
-            }
-
-            public string GameCode
-            {
-                get
-                {
-                    return this.ReadString(12, 4, Encoding.ASCII);
-                }
-                set
-                {
-                    this.WriteString(12, Encoding.ASCII, value.PadRight(4, '\0').Substring(0, 4));
-                }
-            }
-
-            public string MakerCode
-            {
-                get
-                {
-                    return this.ReadString(16, 2, Encoding.ASCII);
-                }
-                set
-                {
-                    this.WriteString(16, Encoding.ASCII, value.PadRight(2, '\0').Substring(0, 2));
-                }
-            }
-
-            public byte UnitCode
-            {
-                get
-                {
-                    return Read(0x12);
-                }
-                set
-                {
-                    Write(0x12, value);
-                }
-            }
-
-            public byte EncryptionSeedSelect
-            {
-                get
-                {
-                    return Read(0x13);
-                }
-                set
-                {
-                    Write(0x13, value);
-                }
-            }
-
-            /// <summary>
-            /// The capacity of the cartridge.  Cartridge size = 128KB * (2 ^ DeviceCapacity)
-            /// </summary>
-            public byte DeviceCapacity
-            {
-                get
-                {
-                    return Read(0x14);
-                }
-                set
-                {
-                    Write(0x14, value);
-                }
-            }
-
-            /// <summary>
-            /// Region of the ROM.
-            /// (00h=Normal, 80h=China, 40h=Korea)
-            /// </summary>
-            public byte NdsRegion
-            {
-                get
-                {
-                    return Read(0x1D);
-                }
-                set
-                {
-                    Write(0x1D, value);
-                }
-            }
-
-            public byte RomVersion
-            {
-                get
-                {
-                    return Read(0x1E);
-                }
-                set
-                {
-                    Write(0x1E, value);
-                }
-            }
-
-            //01Fh    1     Autostart (Bit2: Skip "Press Button" after Health and Safety)
-            //(Also skips bootmenu, even in Manual mode & even Start pressed)
-
-            public int Arm9RomOffset
-            {
-                get
-                {
-                    return this.ReadInt32(0x20);
-                }
-                set
-                {
-                    this.WriteInt32(0x20, value);
-                }
-            }
-
-            public int Arm9EntryAddress
-            {
-                get
-                {
-                    return this.ReadInt32(0x24);
-                }
-                set
-                {
-                    this.WriteInt32(0x24, value);
-                }
-            }
-            public int Arm9RamAddress
-            {
-                get
-                {
-                    return this.ReadInt32(0x28);
-                }
-                set
-                {
-                    this.WriteInt32(0x28, value);
-                }
-            }
-
-            public int Arm9Size
-            {
-                get
-                {
-                    return this.ReadInt32(0x2C);
-                }
-                set
-                {
-                    this.WriteInt32(0x2C, value);
-                }
-            }
-
-            public int Arm7RomOffset
-            {
-                get
-                {
-                    return this.ReadInt32(0x30);
-                }
-                set
-                {
-                    this.WriteInt32(0x30, value);
-                }
-            }
-
-            public int Arm7EntryAddress
-            {
-                get
-                {
-                    return this.ReadInt32(0x34);
-                }
-                set
-                {
-                    this.WriteInt32(0x34, value);
-                }
-            }
-            public int Arm7RamAddress
-            {
-                get
-                {
-                    return this.ReadInt32(0x38);
-                }
-                set
-                {
-                    this.WriteInt32(0x38, value);
-                }
-            }
-
-            public int Arm7Size
-            {
-                get
-                {
-                    return this.ReadInt32(0x3C);
-                }
-                set
-                {
-                    this.WriteInt32(0x3C, value);
-                }
-            }
-
-            public int FilenameTableOffset
-            {
-                get
-                {
-                    return this.ReadInt32(0x40);
-                }
-                set
-                {
-                    this.WriteInt32(0x40, value);
-                }
-            }
-
-            public int FilenameTableSize
-            {
-                get
-                {
-                    return this.ReadInt32(0x44);
-                }
-                set
-                {
-                    this.WriteInt32(0x44, value);
-                }
-            }
-
-            public int FileAllocationTableOffset
-            {
-                get
-                {
-                    return this.ReadInt32(0x48);
-                }
-                set
-                {
-                    this.WriteInt32(0x48, value);
-                }
-            }
-
-            public int FileAllocationTableSize
-            {
-                get
-                {
-                    return this.ReadInt32(0x4C);
-                }
-                set
-                {
-                    this.WriteInt32(0x4C, value);
-                }
-            }
-
-            public int FileArm9OverlayOffset
-            {
-                get
-                {
-                    return this.ReadInt32(0x50);
-                }
-                set
-                {
-                    this.WriteInt32(0x50, value);
-                }
-            }
-
-            public int FileArm9OverlaySize
-            {
-                get
-                {
-                    return this.ReadInt32(0x54);
-                }
-                set
-                {
-                    this.WriteInt32(0x54, value);
-                }
-            }
-
-            public int FileArm7OverlayOffset
-            {
-                get
-                {
-                    return this.ReadInt32(0x58);
-                }
-                set
-                {
-                    this.WriteInt32(0x58, value);
-                }
-            }
-
-            public int FileArm7OverlaySize
-            {
-                get
-                {
-                    return this.ReadInt32(0x5C);
-                }
-                set
-                {
-                    this.WriteInt32(0x5C, value);
-                }
-            }
-
-            // 060h    4     Port 40001A4h setting for normal commands (usually 00586000h)
-            // 064h    4     Port 40001A4h setting for KEY1 commands   (usually 001808F8h)
-
-            public int IconOffset
-            {
-                get
-                {
-                    return this.ReadInt32(0x68);
-                }
-                set
-                {
-                    this.WriteInt32(0x68, value);
-                }
-            }
-
-            public int IconLength
-            {
-                get
-                {
-                    return 0x840;
-                }
-            }
-
-            // 06Ch    2     Secure Area Checksum, CRC-16 of [ [20h]..7FFFh]
-            // 06Eh    2     Secure Area Loading Timeout (usually 051Eh)
-            // 070h    4     ARM9 Auto Load List RAM Address (?)
-            // 074h    4     ARM7 Auto Load List RAM Address (?)
-            // 078h    8     Secure Area Disable (by encrypted "NmMdOnly") (usually zero)
-            // 080h    4     Total Used ROM size (remaining/unused bytes usually FFh-padded)
-            // 084h    4     ROM Header Size (4000h)
-            // 088h    38h   Reserved (zero filled)
-            // 0C0h    9Ch   Nintendo Logo (compressed bitmap, same as in GBA Headers)
-            // 15Ch    2     Nintendo Logo Checksum, CRC-16 of [0C0h-15Bh], fixed CF56h
-            // 15Eh    2     Header Checksum, CRC-16 of [000h-15Dh]
-            // 160h    4     Debug rom_offset   (0=none) (8000h and up)       ;only if debug
-            // 164h    4     Debug size         (0=none) (max 3BFE00h)        ;version with
-            // 168h    4     Debug ram_address  (0=none) (2400000h..27BFE00h) ;SIO and 8MB
-            // 16Ch    4     Reserved (zero filled) (transferred, and stored, but not used)
-            // 170h    90h   Reserved (zero filled) (transferred, but not stored in RAM)
-
+            var binaryFile = new BinaryFile(rawData);
+            return await LoadFromFile(binaryFile, true).ConfigureAwait(false);
         }
 
-        public struct Range
+        /// <summary>
+        /// Loads a ROM from a file
+        /// </summary>
+        /// <param name="rawData">A stream containing the data to load</param>
+        /// <param name="disposeData">Whether to dispose <paramref name="rawData"/> when the <see cref="NdsRom"/> is disposed.</param>
+        public static async Task<NdsRom> LoadFromFile(Stream rawData, bool disposeData = false)
         {
-            public int Start { get; set; }
-
-            public int Length { get; set; }
-
-            public int End
-            {
-                get
-                {
-                    return Start + Length - 1;
-                }
-                set
-                {
-                    Length = (value - Start) + 1;
-                }
-            }
+            var binaryFile = new BinaryFile(rawData);
+            return await LoadFromFile(binaryFile, disposeData).ConfigureAwait(false);
         }
 
-        public class LayoutAnalysisReport
+        /// <summary>
+        /// Loads a ROM from a file
+        /// </summary>
+        /// <param name="rawData">A memory mapped file containing the data to load.</param>
+        /// <param name="fileLength">Length of <paramref name="rawData"/>, in bytes.</param>
+        /// <param name="disposeData">Whether to dispose <paramref name="rawData"/> when the <see cref="NdsRom"/> is disposed.</param>
+        public static async Task<NdsRom> LoadFromFile(MemoryMappedFile rawData, int fileLength, bool disposeData = false)
         {
-            public LayoutAnalysisReport()
-            {
-                Ranges = new Dictionary<Range, string>();
-            }
-
-            /// <summary>
-            /// The address ranges of the ROM. Key: range; Value: name
-            /// </summary>
-            public Dictionary<Range, string> Ranges { get; set; }
-
-            /// <summary>
-            /// Consolidates consecutive ranges of the same category
-            /// </summary>
-            public void CollapseRanges()
-            {
-                var newRanges = new Dictionary<Range, string>();
-                foreach (var item in Ranges.Where(x => x.Key.Length > 0).OrderBy(x => x.Key.Start).GroupBy(x => x.Value, x => x.Key))
-                {
-                    // Get a set of all Ranges in the same category, ordered by the start address
-                    var ranges = item.ToList();
-
-                    // Collapse consecutive ranges
-                    var currentRange = ranges.First();
-                    if (ranges.Count > 1)
-                    {
-                        for (int i = 1; i < ranges.Count; i += 1)
-                        {
-                            if (currentRange.End + 1 == ranges[i].Start)
-                            {
-                                // This range is consecutive
-                                currentRange.Length += currentRange.Length;
-                            }
-                            else
-                            {
-                                // This range is separate
-                                newRanges.Add(currentRange, item.Key);
-                                currentRange = ranges[i];
-                            }
-                        }
-                    }
-                    else
-                    {
-                        newRanges.Add(currentRange, item.Key);
-                    }
-                }
-                Ranges = newRanges;
-            }
-
-            public string GenerateCSV()
-            {
-                CollapseRanges();
-
-                var report = new StringBuilder();
-                report.AppendLine("Section,Start Address (decimal),End Address (decimal),Length (decimal),Start Address (hex),End Address (hex), Length (hex)");
-
-                var ranges = Ranges.OrderBy(x => x.Key.Start).ToList();
-                var currentRange = ranges.First();
-                report.AppendLine($"{currentRange.Value},{currentRange.Key.Start},{currentRange.Key.End},{currentRange.Key.Length},{currentRange.Key.Start.ToString("X")},{currentRange.Key.End.ToString("X")},{currentRange.Key.Length.ToString("X")}");
-                for (int i = 1; i < ranges.Count; i += 1)
-                {
-                    if (currentRange.Key.End + 1 < ranges[i].Key.Start)
-                    {
-                        // There's some unknown parts between the previous one and this one
-                        var section = Properties.Resources.NdsRom_Analysis_UnknownSection;
-                        var start = currentRange.Key.End + 1;
-                        var length = ranges[i].Key.Start - start;
-                        var end = start + length - 1;
-                        report.AppendLine($"{section},{start},{end},{length},{start.ToString("X")},{end.ToString("X")},{length.ToString("X")}");
-                    }
-                    currentRange = ranges[i];
-                    report.AppendLine($"{currentRange.Value},{currentRange.Key.Start},{currentRange.Key.End},{currentRange.Key.Length},{currentRange.Key.Start.ToString("X")},{currentRange.Key.End.ToString("X")},{currentRange.Key.Length.ToString("X")}");
-                }
-
-                return report.ToString();
-            }
-        }
-        #endregion
-
-        public NdsRom()
-        {
-            RawData = new GenericFile();
-            RawData.EnableInMemoryLoad = true;
-            (this as IFileSystem).ResetWorkingDirectory();
-            DataPath = "data";
+            var binaryFile = new BinaryFile(rawData, fileLength);
+            return await LoadFromFile(binaryFile, disposeData).ConfigureAwait(false);
         }
 
-        public event EventHandler<ProgressReportedEventArgs> ProgressChanged;
-        public event EventHandler Completed;
-        public event EventHandler FileSaved;
+        /// <summary>
+        /// Loads a ROM from an already-extracted ROM.
+        /// </summary>
+        /// <param name="directory">Directory containing the extracted files</param>
+        /// <param name="fileSystem">File system containing <paramref name="directory"/>. If you want your OS's file system, use <see cref="LoadFromDirectory(string)"/> instead.</param>
+        public static NdsRom LoadFromDirectory(string directory, IFileSystem fileSystem)
+        {
+            return new NdsRom(null, false, directory, fileSystem, false);
+        }
+
+        /// <summary>
+        /// Loads a ROM from an already-extracted ROM.
+        /// </summary>
+        /// <param name="directory">Directory containing the extracted files</param>
+        public static NdsRom LoadFromDirectory(string directory)
+        {
+            return LoadFromDirectory(directory, PhysicalFileSystem.Instance);
+        }
+
+        /// <summary>
+        /// Performs basic analysis to determine whether the provided data is likely a Nintendo DS ROM.
+        /// </summary>
+        public static async Task<bool> IsOfType(IReadOnlyBinaryDataAccessor data)
+        {
+            return data.Length > 0x15D && await data.ReadByteAsync(0x15C) == 0x56 && await data.ReadByteAsync(0x15D) == 0xCF;
+        }
+
+        protected NdsRom(IReadOnlyBinaryDataAccessor? data, bool disposeData, string virtualPath, IFileSystem virtualFileSystem, bool disposeVirtualPath)
+        {
+            RawData = data;
+            this.disposeData = disposeData;
+            this.disposeVirtualPath = disposeVirtualPath;
+            FileSystem = new NdsFileSystem(this, virtualPath, virtualFileSystem, disposeVirtualPath);
+        }
+
+        private readonly bool disposeData;
+        private readonly bool disposeVirtualPath;
 
         /// <summary>
         /// The underlying data
         /// </summary>
-        private GenericFile RawData { get; set; }
+        public IReadOnlyBinaryDataAccessor? RawData { get; protected set; }
 
         /// <summary>
-        /// The I/O provider used for the virtual file system (aka the staging area used to store changes that have not been saved)
+        /// The raw ROM header
         /// </summary>
-        private IFileSystem CurrentFileSystem { get; set; }
+        public NdsHeader? Header { get; protected set; }
 
         /// <summary>
-        /// The location of the ROM
+        /// The raw ARM 9 overlay table.
+        /// If you're looking for ARM 9 overlay data, use <see cref="FileSystem"/> and browse files in "/overlay".
         /// </summary>
-        public string Filename { get; set; }
-
-        public string Name => Path.GetFileName(Filename);
+        public IReadOnlyList<OverlayTableEntry> Arm9OverlayTable { get; protected set; } = [];
 
         /// <summary>
-        /// The path of the nitrofs file system is stored. Defaults to "data".
+        /// The raw ARM 7 overlay table.
+        /// If you're looking for ARM 9 overlay data, use <see cref="FileSystem"/> and browse files in "/overlay7".
         /// </summary>
-        public string DataPath { get; set; }
+        public IReadOnlyList<OverlayTableEntry> Arm7OverlayTable { get; protected set; } = [];
 
         /// <summary>
-        /// Reads
+        /// The raw file allocation table.
+        /// If you're looking for the files themselves, use <see cref="FileSystem"/> and browse files in "/data".
         /// </summary>
-        private async Task LoadRomHeader()
-        {          
-            Header = new NdsHeader();
-            Header.CreateFile(await RawData.ReadAsync(0, 512));
+        public IReadOnlyList<FileAllocationEntry> FAT { get; protected set; } = [];
 
-            var loadingTasks = new List<Task>();
+        /// <summary>
+        /// The raw filename table.
+        /// If you're looking for the files themselves, use <see cref="FileSystem"/> and browse files in "/data".
+        /// </summary>
+        public FilenameTable? FNT { get; protected set; }
 
-            // Load Arm9 Overlays
-            var arm9overlayTask = Task.Run(async () => Arm9OverlayTable = await ParseArm9OverlayTable());
-            loadingTasks.Add(arm9overlayTask);
+        /// <summary>
+        /// A developer-friendly way of interacting with the ROM file system.
+        /// Changes made here will be reflected when the ROM is saved with <see cref="Save(string)"/>.
+        /// </summary>
+        public NdsFileSystem FileSystem { get; protected set; }
 
-            // Load Arm7 Overlays
-            var arm7overlayTask = Task.Run(async () => Arm7OverlayTable = await ParseArm7OverlayTable());
-            loadingTasks.Add(arm7overlayTask);
-
-            // Load FAT
-            var fatTask = Task.Run(async () => FAT = await ParseFAT());
-            loadingTasks.Add(fatTask);
-
-            // Load FNT
-            var fntTask = Task.Run(async () => FNT = await ParseFNT());
-            loadingTasks.Add(fntTask);
-
-            // Wait for all loading
-            await Task.WhenAll(loadingTasks);
-        }
-
-        public void CreateFile(string name)
+        /// <summary>
+        /// Extracts the files contained within the ROM.
+        /// </summary>
+        /// <param name="targetDir">Directory in the given I/O provider (<paramref name="provider"/>) to store the extracted files</param>
+        /// <param name="provider">The file system to contain the extracted files. Use <see cref="Unpack(string)"/> if you want your OS's file system.</param>
+        public async Task Unpack(string targetDir, IFileSystem provider, ProgressReportToken? progressReportToken = null)
         {
-            RawData.CreateFile(name);
-        }
+            // Get the files
+            var files = FileSystem.GetFiles("/", "*", false);
 
-        public async Task OpenFile(string filename, IFileSystem provider)
-        {
-            this.CurrentFileSystem = provider;
-            if (provider.FileExists(filename))
+            // Set progress
+            var totalFileCount = files.Length;
+            var extractedFileCount = 0;
+            if (progressReportToken != null)
             {
-                await RawData.OpenFile(filename, provider);
+                progressReportToken.IsIndeterminate = false;
+                progressReportToken.IsCompleted = false;
+            }
 
-                // Clear virtual path if it exists
-                if (!string.IsNullOrEmpty(VirtualPath) && provider.DirectoryExists(VirtualPath))
+            // Ensure directory exists
+            if (!provider.DirectoryExists(targetDir))
+            {
+                provider.CreateDirectory(targetDir);
+            }
+
+            // Extract the files
+            var extractionTasks = new List<Task>();
+            foreach (var item in files)
+            {
+                var currentItem = item;
+                var currentTask = Task.Run(() =>
                 {
-                    provider.DeleteDirectory(VirtualPath);
-                }
+                    var dest = Path.Combine(targetDir, currentItem.TrimStart('/'));
+                    var destDirectoryName = Path.GetDirectoryName(dest);
+                    if (string.IsNullOrEmpty(destDirectoryName))
+                    {
+                        throw new InvalidOperationException($"Could not get directory name of file '{dest}'");
+                    }
+                    if (!Directory.Exists(destDirectoryName))
+                    {
+                        lock (_unpackDirectoryCreateLock)
+                        {
+                            if (!Directory.Exists(destDirectoryName))
+                            {
+                                Directory.CreateDirectory(destDirectoryName);
+                            }
+                        }
+                    }
+                    provider.WriteAllBytes(dest, FileSystem.ReadAllBytes(currentItem));
+                    Interlocked.Increment(ref extractedFileCount);
+                    if (progressReportToken != null)
+                    {
+                        progressReportToken.Progress = extractedFileCount / totalFileCount;
+                    }
+                });
 
-                VirtualPath = provider.GetTempDirectory();
-
-                await LoadRomHeader();
+                extractionTasks.Add(currentTask);
             }
-            else if (provider.DirectoryExists(filename))
-            {
-                RawData.CreateFile(new byte[0]);
-                VirtualPath = filename;
-                DisposeVirtualPath = false;
-            }
-            else
-            {
-                throw new FileNotFoundException("Could not find file or directory at the given path", filename);
-            }
+            await Task.WhenAll(extractionTasks);
         }
+        private readonly object _unpackDirectoryCreateLock = new();
 
-        public async Task OpenFileInMemory(byte[] rawData)
+        /// <summary>
+        /// Extracts the files contained within the ROM.
+        /// </summary>
+        /// <param name="targetDir">Directory to store the extracted files</param>
+        public async Task Unpack(string targetDir)
         {
-            RawData.CreateFile(rawData);
-            this.CurrentFileSystem = new MemoryFileSystem();
-            VirtualPath = "/";
-            await LoadRomHeader();
-        }
-
-        public async Task<bool> IsOfType(GenericFile file)
-        {
-            return file.Length > 0x15D && await file.ReadAsync(0x15C) == 0x56 && await file.ReadAsync(0x15D) == 0xCF;
+            await Unpack(targetDir, PhysicalFileSystem.Instance).ConfigureAwait(false);
         }
 
         /// <summary>
-        /// Calculates the padding size of a file
+        /// Builds a new ROM based on current ROM data and any changes made with <see cref="FileSystem"/>.
         /// </summary>
-        /// <param name="fileLength">Length of the file</param>
-        /// <param name="blockSize">Length of the block</param>
-        /// <returns>Size of the padding</returns>
-        private int CalculatePaddingSize(int fileLength, int blockSize = 0x200)
-        {
-            int paddingLength = blockSize - (fileLength % blockSize);
-            if (paddingLength == blockSize)
-            {
-                paddingLength = 0;
-            }
-            return paddingLength;
-        }
-
-        /// <summary>
-        /// Writes padding for the file
-        /// </summary>
-        /// <param name="index">The offset at which to write padding</param>
-        /// <param name="fileLength">Length of the file to pad</param>
-        /// <param name="blockSize">The current block size. Defaults to 0x200</param>
-        /// <returns>The length in bytes of the padding written</returns>
-        private async Task<int> WritePadding(long index, int fileLength, int blockSize = 0x200)
-        {
-            var paddingLength = CalculatePaddingSize(fileLength, blockSize);
-            // await WriteAsync(index, new byte[paddingLength]); // Faster
-            await RawData.WriteAsync(index, Enumerable.Repeat<byte>(0xFF, paddingLength).ToArray());
-            return paddingLength;
-        }
-
-        /// <summary>
-        /// Writes files to the ROM and updates the given raw FAT
-        /// </summary>
-        /// <param name="filesAlloc">Data to be written</param>
-        /// <param name="nextFileOffset">Offset to write the data to</param>
-        /// <param name="fat">The raw file allocation table. This will be updated as files are written</param>
-        /// <returns>The updated next file offset</returns>
-        private async Task<int> WriteFATFiles(ConcurrentDictionary<int, byte[]> filesAlloc, int fileIdStart, int nextFileOffset, List<byte> fat)
-        {
-            for (int i = fileIdStart; i <= filesAlloc.Keys.Max(); i += 1)
-            {
-                if (filesAlloc.ContainsKey(i))
-                {
-                    var data = filesAlloc[i];
-
-                    await RawData.WriteAsync(nextFileOffset, data); // Write data
-                    var paddingLength = await WritePadding(nextFileOffset + data.Length, data.Length);
-
-                    fat.AddRange(BitConverter.GetBytes(nextFileOffset)); // File start index
-                    fat.AddRange(BitConverter.GetBytes(nextFileOffset + data.Length)); // File end index
-                    nextFileOffset += data.Length + paddingLength;
-                }
-                else
-                {
-                    fat.AddRange(Enumerable.Repeat<byte>(0, 8));
-                }
-            }
-            return nextFileOffset;
-        }
-
+        /// <param name="filename">Filename of the new ROM</param>
+        /// <param name="provider">The file system to contain the new ROM. Use <see cref="Save(string)"/> if you want your OS's file system.</param>
         public async Task Save(string filename, IFileSystem provider)
         {
             var overlay9Alloc = new ConcurrentDictionary<int, byte[]>();
@@ -833,35 +268,35 @@ namespace DotNetNdsToolkit
             int nextFileOffset = 0;
 
             // Identify files
-            var header = new NdsHeader();
-            await header.OpenFile("/header.bin", this);
-            var arm9Bin = (this as IFileSystem).ReadAllBytes("/arm9.bin");
-            var arm7Bin = (this as IFileSystem).ReadAllBytes("/arm7.bin");
-            var banner = (this as IFileSystem).ReadAllBytes("/banner.bin");
+            var headerData = new BinaryFile(FileSystem.ReadAllBytes("/header.bin"));
+            var header = new NdsHeader(headerData);
+            var arm9Bin = FileSystem.ReadAllBytes("/arm9.bin");
+            var arm7Bin = FileSystem.ReadAllBytes("/arm7.bin");
+            var banner = FileSystem.ReadAllBytes("/banner.bin");
             // - Identify ARM9 overlays
-            var overlay9Raw = (this as IFileSystem).ReadAllBytes("/y9.bin");
+            var overlay9Raw = FileSystem.ReadAllBytes("/y9.bin");
             var arm9For = new AsyncFor();
             await arm9For.RunFor(i =>
             {
                 var entry = new OverlayTableEntry(overlay9Raw, i);
                 var overlayPath = $"/overlay/overlay_{entry.FileID.ToString().PadLeft(4, '0')}.bin";
-                if ((this as IFileSystem).FileExists(overlayPath))
+                if (FileSystem.FileExists(overlayPath))
                 {
-                    overlay9Alloc[entry.FileID] = (this as IFileSystem).ReadAllBytes(overlayPath);
+                    overlay9Alloc[entry.FileID] = FileSystem.ReadAllBytes(overlayPath);
                 }
                 overlay9[entry.OverlayID] = entry;
             }, 0, overlay9Raw.Length - 1, 32);
 
             // - Identify ARM7 overlays
-            var overlay7Raw = (this as IFileSystem).ReadAllBytes("/y7.bin");
+            var overlay7Raw = FileSystem.ReadAllBytes("/y7.bin");
             var arm7For = new AsyncFor();
             await arm7For.RunFor(i =>
             {
                 var entry = new OverlayTableEntry(overlay7Raw, i);
                 var overlayPath = $"/overlay7/overlay_{entry.FileID.ToString().PadLeft(4, '0')}.bin";
-                if ((this as IFileSystem).FileExists(overlayPath))
+                if (FileSystem.FileExists(overlayPath))
                 {
-                    var data = (this as IFileSystem).ReadAllBytes(overlayPath);
+                    var data = FileSystem.ReadAllBytes(overlayPath);
                     overlay7Alloc[entry.FileID] = data;
                 }
                 overlay7[entry.OverlayID] = entry;
@@ -870,11 +305,11 @@ namespace DotNetNdsToolkit
             // - Nitrofs
             var overlay9Max = overlay9.Keys.Count > 0 ? overlay9.Keys.Max() : 0;
             var overlay7Max = overlay7.Keys.Count > 0 ? overlay7.Keys.Max() : 0;
-            var files = (this as IFileSystem).GetFiles("/data", "*", false);
+            var files = FileSystem.GetFiles("/data", "*", false);
             var filesFor = new AsyncFor();
             await filesFor.RunFor(i =>
             {
-                var data = (this as IFileSystem).ReadAllBytes(files[i]);
+                var data = FileSystem.ReadAllBytes(files[i]);
                 var fileID = i + overlay9Max + overlay7Max + 1; // File ID is 1 greater than highest index in overlay9 and overlay7
                 filesAlloc[fileID] = data;
                 fileNames[files[i]] = fileID;
@@ -903,25 +338,26 @@ namespace DotNetNdsToolkit
             // Log Base 2 (Cartridge size / 128KB) = DeviceCapacity
             var deviceCapacity = (byte)Math.Ceiling(Math.Log(Math.Ceiling((double)totalFileSize / (128 * 1024)), 2));
             header.DeviceCapacity = deviceCapacity;
-            RawData.SetLength((long)(Math.Pow(2, deviceCapacity) * 128 * 1024));
+
+            var newData = new BinaryFile(new byte[(long)(Math.Pow(2, deviceCapacity) * 128 * 1024)]);
 
             // Header: always at 0x00
             // Note: Will rewrite header later to fix file references
-            await RawData.WriteAsync(0, await header.ReadAsync());
+            await newData.WriteAsync(0, headerData.ReadArray());
 
             // ARM9 Binary: always at 0x4000
-            header.FileArm9OverlayOffset = 0x4000;
+            header.Arm9RomOffset = 0x4000;
             if (BitConverter.ToUInt32(arm9Bin, arm9Bin.Length - 5) == 0xDEC00621)
             {
-                header.FileArm9OverlaySize = arm9Bin.Length - 0xC;
+                header.Arm9Size = arm9Bin.Length - 0xC;
             }
             else
             {
-                header.FileArm9OverlaySize = arm9Bin.Length;
+                header.Arm9Size = arm9Bin.Length;
             }
-            var arm9End = header.FileArm9OverlayOffset + arm9Bin.Length;
-            await RawData.WriteAsync(header.FileArm9OverlayOffset, arm9Bin);
-            nextFileOffset = arm9End + await WritePadding(arm9End, arm9Bin.Length);
+            var arm9End = header.Arm9RomOffset + arm9Bin.Length;
+            await newData.WriteAsync(header.Arm9RomOffset, arm9Bin);
+            nextFileOffset = arm9End + await WritePadding(newData, arm9End, arm9Bin.Length);
 
             // ARM9 Overlay Table
             // - Write the table
@@ -930,17 +366,17 @@ namespace DotNetNdsToolkit
             for (int i = 0; i < overlay9.Count; i += 1)
             {
                 var bytes = overlay9[i].GetBytes();
-                await RawData.WriteAsync(header.FileArm9OverlayOffset + 32 * i, bytes);
+                await newData.WriteAsync(header.FileArm9OverlayOffset + 32 * i, bytes);
                 overlay9Length += 32;
             }
             header.FileArm9OverlaySize = overlay9Length;
             var overlay9End = header.FileArm9OverlayOffset + overlay9Length;
-            nextFileOffset = overlay9End + await WritePadding(overlay9End, overlay9Length);
+            nextFileOffset = overlay9End + await WritePadding(newData, overlay9End, overlay9Length);
 
             // - Write ARM9 Overlay Files
             if (overlay9Alloc.Any())
             {
-                nextFileOffset = await WriteFATFiles(overlay9Alloc, 0, nextFileOffset, fat);
+                nextFileOffset = await WriteFATFiles(newData, overlay9Alloc, 0, nextFileOffset, fat);
             }
             else
             {
@@ -948,11 +384,11 @@ namespace DotNetNdsToolkit
             }
 
             // ARM7 Binary
-            header.FileArm7OverlayOffset = nextFileOffset;
-            header.FileArm7OverlaySize = arm7Bin.Length;
-            var arm7End = header.FileArm7OverlayOffset + arm7Bin.Length;
-            await RawData.WriteAsync(header.FileArm7OverlayOffset, arm7Bin);
-            nextFileOffset = arm7End + await WritePadding(arm7End, arm7Bin.Length);
+            header.Arm7RomOffset = nextFileOffset;
+            header.Arm7Size = arm7Bin.Length;
+            var arm7End = header.Arm7RomOffset + arm7Bin.Length;
+            await newData.WriteAsync(header.Arm7RomOffset, arm7Bin);
+            nextFileOffset = arm7End + await WritePadding(newData, arm7End, arm7Bin.Length);
 
             // ARM7 Overlay Table
             // - Write the table
@@ -961,7 +397,7 @@ namespace DotNetNdsToolkit
             for (int i = 0; i < overlay7.Count; i += 1)
             {
                 var bytes = overlay7[i].GetBytes();
-                await RawData.WriteAsync(header.FileArm7OverlayOffset + 32 * i, bytes);
+                await newData.WriteAsync(header.FileArm7OverlayOffset + 32 * i, bytes);
                 overlay7Length += bytes.Length;
             }
             header.FileArm7OverlaySize = overlay7Length;
@@ -969,7 +405,7 @@ namespace DotNetNdsToolkit
             // - Write ARM7 Overlay Files
             if (overlay7Alloc.Any())
             {
-                nextFileOffset = await WriteFATFiles(overlay7Alloc, overlay7Alloc.Keys.Min(), nextFileOffset, fat);
+                nextFileOffset = await WriteFATFiles(newData, overlay7Alloc, overlay7Alloc.Keys.Min(), nextFileOffset, fat);
             }
             else
             {
@@ -977,56 +413,62 @@ namespace DotNetNdsToolkit
             }
 
             // Write FNT
-            await RawData.WriteAsync(nextFileOffset, fntSection.ToArray());
-            nextFileOffset += fntSection.Count + await WritePadding(nextFileOffset + fntSection.Count, fntSection.Count);
+            header.FilenameTableOffset = nextFileOffset;
+            var fntData = fntSection.ToArray();
+            header.FilenameTableSize = fntData.Length;
+            await newData.WriteAsync(nextFileOffset, fntData);
+            nextFileOffset += fntSection.Count + await WritePadding(newData, nextFileOffset + fntSection.Count, fntSection.Count);
 
             // Write dummy fat, since it's still being made
             // -- Calculate total fat size (fat already contains overlays, just need to add nitrofs files)
-            var fatSize = fat.Count + filesAlloc.Keys.Count * 8;
-            var fatIndex = nextFileOffset;
-            await RawData.WriteAsync(fatIndex, new byte[fatSize]);
-            nextFileOffset += fatSize + await WritePadding(fatIndex, fatSize);
+            header.FileAllocationTableSize = fat.Count + filesAlloc.Keys.Count * 8;
+            header.FileAllocationTableOffset = nextFileOffset;
+            await newData.WriteAsync(header.FileAllocationTableOffset, new byte[header.FileAllocationTableSize]);
+            nextFileOffset += header.FileAllocationTableSize + await WritePadding(newData, header.FileAllocationTableOffset, header.FileAllocationTableSize);
 
             // Write banner            
             header.IconOffset = nextFileOffset;
-            await RawData.WriteAsync(header.IconOffset, banner);
-            nextFileOffset += header.IconLength + await WritePadding(header.IconOffset + header.IconLength, header.IconLength);
+            await newData.WriteAsync(header.IconOffset, banner);
+            nextFileOffset += header.IconLength + await WritePadding(newData, header.IconOffset + header.IconLength, header.IconLength);
 
             // Write Files
             if (filesAlloc.Any())
             {
-                nextFileOffset = await WriteFATFiles(filesAlloc, filesAlloc.Keys.Min(), nextFileOffset, fat);
+                nextFileOffset = await WriteFATFiles(newData, filesAlloc, filesAlloc.Keys.Min(), nextFileOffset, fat);
             }
 
             // Write the actual fat
-            await RawData.WriteAsync(fatIndex, fat.ToArray());
+            await newData.WriteAsync(header.FileAllocationTableOffset, fat.ToArray());
 
             // Write the updated header
-            await RawData.WriteAsync(0, await header.ReadAsync());
+            await newData.WriteAsync(0, headerData.ReadArray());
 
-            await RawData.Save(filename, provider);
-
-            FileSaved?.Invoke(this, new EventArgs());
+            provider.WriteAllBytes(filename, await newData.ReadArrayAsync());
         }
 
-        public async Task Save(IFileSystem provider)
+        /// <summary>
+        /// Builds a new ROM based on current ROM data and any changes made with <see cref="FileSystem"/>.
+        /// </summary>
+        /// <param name="filename">Filename of the new ROM</param>
+        public async Task Save(string filename)
         {
-            await Save(this.Filename, provider);
+            await Save(filename, PhysicalFileSystem.Instance).ConfigureAwait(false);
         }
-
-        public string GetDefaultExtension() => "*.nds";
-
-        public IEnumerable<string> GetSupportedExtensions() => new[] { "*.nds", "*.srl" };
 
         /// <summary>
         /// Analyzes the layout of the sections of the ROM
         /// </summary>
         public LayoutAnalysisReport AnalyzeLayout(bool showPadding = false)
         {
+            if (Header == null)
+            {
+                throw new InvalidOperationException("ROM must be loaded from file to analyze layout");
+            }
+
             var report = new LayoutAnalysisReport();
 
             // Header
-            report.Ranges.Add(new Range { Start = 0, Length = (int)Header.Length }, Properties.Resources.NdsRom_Analysis_HeaderSection);
+            report.Ranges.Add(new Range { Start = 0, Length = NdsHeader.HeaderLength }, Properties.Resources.NdsRom_Analysis_HeaderSection);
 
             // Icon
             report.Ranges.Add(new Range { Start = Header.IconOffset, Length = Header.IconLength }, Properties.Resources.NdsRom_Analysis_IconSection);
@@ -1070,52 +512,89 @@ namespace DotNetNdsToolkit
             return report;
         }
 
-        #region Properties
-        public NdsHeader Header { get; set; }
-
-        private List<OverlayTableEntry> Arm9OverlayTable { get; set; }
-
-        private List<OverlayTableEntry> Arm7OverlayTable { get; set; }
-
-        private List<FileAllocationEntry> FAT { get; set; }
-
-        private FilenameTable FNT { get; set; }
-
         /// <summary>
-        /// Path in the current I/O provider where temporary files are stored
+        /// Reads
         /// </summary>
-        private string VirtualPath { get; set; }
+        private async Task LoadRomHeader()
+        {
+            if (RawData == null)
+            {
+                throw new InvalidOperationException("ROM must have been loaded from file to load its header");
+            }
 
-        /// <summary>
-        /// Whether or not to delete <see cref="VirtualPath"/> on delete
-        /// </summary>
-        private bool DisposeVirtualPath { get; set; }
+            Header = new NdsHeader(RawData.Slice(0, 512));
 
-        #endregion
+            var loadingTasks = new List<Task>();
 
-        #region Functions
+            // Load Arm9 Overlays
+            var arm9overlayTask = Task.Run(async () => Arm9OverlayTable = await ParseArm9OverlayTable());
+            loadingTasks.Add(arm9overlayTask);
+
+            // Load Arm7 Overlays
+            var arm7overlayTask = Task.Run(async () => Arm7OverlayTable = await ParseArm7OverlayTable());
+            loadingTasks.Add(arm7overlayTask);
+
+            // Load FAT
+            var fatTask = Task.Run(async () => FAT = await ParseFAT());
+            loadingTasks.Add(fatTask);
+
+            // Load FNT
+            var fntTask = Task.Run(async () => FNT = await ParseFNT());
+            loadingTasks.Add(fntTask);
+
+            // Wait for all loading
+            await Task.WhenAll(loadingTasks).ConfigureAwait(false);
+        }
+
         private async Task<List<OverlayTableEntry>> ParseArm9OverlayTable()
         {
+            if (Header == null)
+            {
+                throw new InvalidOperationException("Header must be loaded to parse Arm 9 Overlay Table");
+            }
+            if (RawData == null)
+            {
+                throw new InvalidOperationException("ROM must have been loaded from file to parse Arm 9 Overlay Table");
+            }
+
             var output = new List<OverlayTableEntry>();
             for (int i = Header.FileArm9OverlayOffset; i < Header.FileArm9OverlayOffset + Header.FileArm9OverlaySize; i += 32)
             {
-                output.Add(new OverlayTableEntry(await RawData.ReadAsync(i, 32)));
+                output.Add(new OverlayTableEntry(await RawData.ReadArrayAsync(i, 32)));
             }
             return output;
         }
 
         private async Task<List<OverlayTableEntry>> ParseArm7OverlayTable()
         {
+            if (Header == null)
+            {
+                throw new InvalidOperationException("Header must be loaded to parse Arm 7 Overlay Table");
+            }
+            if (RawData == null)
+            {
+                throw new InvalidOperationException("ROM must have been loaded from file to parse Arm 7 Overlay Table");
+            }
+
             var output = new List<OverlayTableEntry>();
             for (int i = Header.FileArm7OverlayOffset; i < Header.FileArm7OverlayOffset + Header.FileArm7OverlaySize; i += 32)
             {
-                output.Add(new OverlayTableEntry(await RawData.ReadAsync(i, 32)));
+                output.Add(new OverlayTableEntry(await RawData.ReadArrayAsync(i, 32)));
             }
             return output;
         }
 
         private async Task<List<FileAllocationEntry>> ParseFAT()
         {
+            if (Header == null)
+            {
+                throw new InvalidOperationException("Header must be loaded to parse FAT Table");
+            }
+            if (RawData == null)
+            {
+                throw new InvalidOperationException("ROM must have been loaded from file to parse FAT Table");
+            }
+
             var output = new List<FileAllocationEntry>();
             for (int i = Header.FileAllocationTableOffset; i < Header.FileAllocationTableOffset + Header.FileAllocationTableSize; i += 8)
             {
@@ -1126,29 +605,49 @@ namespace DotNetNdsToolkit
 
         private async Task<FilenameTable> ParseFNT()
         {
+            if (Header == null)
+            {
+                throw new InvalidOperationException("Header must be loaded to parse FNT Table");
+            }
+            if (RawData == null)
+            {
+                throw new InvalidOperationException("ROM must have been loaded from file to parse FNT Table");
+            }
+
             // Read the raw structures
-            var root = new DirectoryMainTable(await RawData.ReadAsync(Header.FilenameTableOffset, 8));
+            var root = new DirectoryMainTable(await RawData.ReadArrayAsync(Header.FilenameTableOffset, 8));
             var rootDirectories = new List<DirectoryMainTable>();
 
             // - In the root directory only, ParentDir means the number of directories
             for (int i = 1; i < root.ParentDir; i += 1)
             {
                 var offset = Header.FilenameTableOffset + i * 8;
-                rootDirectories.Add(new DirectoryMainTable(await RawData.ReadAsync(offset, 8)));
+                rootDirectories.Add(new DirectoryMainTable(await RawData.ReadArrayAsync(offset, 8)));
             }
 
             // Build the filename table
-            var output = new FilenameTable();
-            output.Name = DataPath;
+            var output = new FilenameTable
+            {
+                Name = "data"
+            };
             await BuildFNTFromROM(output, root, rootDirectories);
             return output;
         }
 
         private async Task<List<FNTSubTable>> ReadFNTSubTable(uint rootSubTableOffset, ushort parentFileID)
         {
+            if (Header == null)
+            {
+                throw new InvalidOperationException("Header must be loaded to parse FNT Sub Table");
+            }
+            if (RawData == null)
+            {
+                throw new InvalidOperationException("ROM must have been loaded from file to parse FNT Sub Table");
+            }
+
             var subTables = new List<FNTSubTable>();
             var offset = rootSubTableOffset + Header.FilenameTableOffset;
-            var length = await RawData.ReadAsync(offset);
+            var length = await RawData.ReadByteAsync(offset);
             while (length > 0)
             {
                 if (length > 128)
@@ -1172,7 +671,7 @@ namespace DotNetNdsToolkit
                     throw new FormatException($"Subtable length of 0x80 is not supported and likely invalid.  Root subtable offset: {rootSubTableOffset}");
                 }
 
-                length = await RawData.ReadAsync(offset);
+                length = await RawData.ReadByteAsync(offset);
             }
             return subTables;
         }
@@ -1203,12 +702,12 @@ namespace DotNetNdsToolkit
         /// <param name="filenames">Dicitonary matching paths to file indexes. </param>
         private FilenameTable BuildCurrentFNTChild(string path, IDictionary<string, int> filenames, ref UInt16 directoryCount, ref int fileCount)
         {
-            var provider = this as IFileSystem;
+            var table = new FilenameTable
+            {
+                Name = Path.GetFileName(path)
+            };
 
-            var table = new FilenameTable();
-            table.Name = Path.GetFileName(path);
-
-            if (provider.FileExists(path))
+            if (FileSystem.FileExists(path))
             {
                 table.FileIndex = filenames[path];
                 fileCount += 1;
@@ -1217,15 +716,17 @@ namespace DotNetNdsToolkit
             {
                 table.DirectoryID = (UInt16)(directoryCount | 0xF000);
                 directoryCount += 1;
-                foreach (var item in provider.GetDirectories(path, true))
+                foreach (var item in FileSystem.GetDirectories(path, true))
                 {
                     table.Children.Add(BuildCurrentFNTChild(item, filenames, ref directoryCount, ref fileCount));
                 }
-                foreach (var item in provider.GetFiles(path, "*", true))
+                foreach (var item in FileSystem.GetFiles(path, "*", true))
                 {
-                    var child = new FilenameTable();
-                    child.Name = Path.GetFileName(item);
-                    child.FileIndex = filenames[item];
+                    var child = new FilenameTable
+                    {
+                        Name = Path.GetFileName(item),
+                        FileIndex = filenames[item]
+                    };
                     
                     table.Children.Add(child);
                     fileCount += 1;
@@ -1326,771 +827,93 @@ namespace DotNetNdsToolkit
         /// <summary>
         /// Determines whether or not an additional 0xC of the ARM9 binary is needed
         /// </summary>
-        private bool CheckNeedsArm9Footer()
+        public bool CheckNeedsArm9Footer()
         {
+            if (Header == null)
+            {
+                throw new InvalidOperationException("Header must be loaded to analyze ARM 9 footer requirement");
+            }
+            if (RawData == null)
+            {
+                throw new InvalidOperationException("ROM must have been loaded from file to analyze ARM 9 footer requirement");
+            }
+
             return RawData.ReadUInt32(Header.Arm9RomOffset + Header.Arm9Size) == 0xDEC00621;
         }
 
-        /// <summary>
-        /// Extracts the files contained within the ROM.
-        /// </summary>
-        /// <param name="targetDir">Directory in the given I/O provider (<paramref name="provider"/>) to store the extracted files</param>
-        /// <param name="provider">The I/O provider to which the files should be written</param>
-        public async Task Unpack(string targetDir, IFileSystem provider)
-        {
-            // Get the files
-            var files = (this as IFileSystem).GetFiles("/", "*", false);
-
-            // Set progress
-            TotalFileCount = files.Length;
-            ExtractedFileCount = 0;
-
-            // Ensure directory exists
-            if (!provider.DirectoryExists(targetDir))
-            {
-                provider.CreateDirectory(targetDir);
-            }
-
-            // Extract the files
-            var extractionTasks = new List<Task>();
-            foreach (var item in files)
-            {
-                var currentItem = item;
-                var currentTask = Task.Run(() =>
-                {
-                    var dest = Path.Combine(targetDir, currentItem.TrimStart('/'));
-                    if (!Directory.Exists(Path.GetDirectoryName(dest)))
-                    {
-                        lock (_unpackDirectoryCreateLock)
-                        {
-                            if (!Directory.Exists(Path.GetDirectoryName(dest)))
-                            {
-                                Directory.CreateDirectory(Path.GetDirectoryName(dest));
-                            }
-                        }
-                    }
-                    provider.WriteAllBytes(dest, (this as IFileSystem).ReadAllBytes(currentItem));
-                    Interlocked.Increment(ref _extractedFileCount);
-                    ReportProgressChanged();
-                });
-                
-                extractionTasks.Add(currentTask);
-            }
-            await Task.WhenAll(extractionTasks);
-        }
-        private object _unpackDirectoryCreateLock = new object();
-        #endregion
-
-        #region IReportProgress Implementation
 
         /// <summary>
-        /// Raises <see cref="ProgressChanged"/> using the value of relevant properties
+        /// Calculates the padding size of a file
         /// </summary>
-        private void ReportProgressChanged()
+        /// <param name="fileLength">Length of the file</param>
+        /// <param name="blockSize">Length of the block</param>
+        /// <returns>Size of the padding</returns>
+        private int CalculatePaddingSize(int fileLength, int blockSize = 0x200)
         {
-            ProgressChanged?.Invoke(this, new ProgressReportedEventArgs { Message = Message, IsIndeterminate = false, Progress = Progress });
+            int paddingLength = blockSize - (fileLength % blockSize);
+            if (paddingLength == blockSize)
+            {
+                paddingLength = 0;
+            }
+            return paddingLength;
         }
 
         /// <summary>
-        /// The number of files that have been extracted in the current extraction operation
+        /// Writes padding for the file
         /// </summary>
-        public int ExtractedFileCount
+        /// <param name="index">The offset at which to write padding</param>
+        /// <param name="fileLength">Length of the file to pad</param>
+        /// <param name="blockSize">The current block size. Defaults to 0x200</param>
+        /// <returns>The length in bytes of the padding written</returns>
+        private async Task<int> WritePadding(IWriteOnlyBinaryDataAccessor data, long index, int fileLength, int blockSize = 0x200)
         {
-            get
-            {
-                return _extractedFileCount;
-            }
-            set
-            {
-                if (_extractedFileCount != value)
-                {
-                    _extractedFileCount = value;
-                    ReportProgressChanged();
-                }
-            }
+            var paddingLength = CalculatePaddingSize(fileLength, blockSize);
+            var padding = new byte[paddingLength];
+            Array.Fill<byte>(padding, 0xFF);
+            await data.WriteAsync(index, padding);
+            return paddingLength;
         }
-        private int _extractedFileCount;
 
         /// <summary>
-        /// The total number of files in the ROM
+        /// Writes files to the ROM and updates the given raw FAT
         /// </summary>
-        public int TotalFileCount
+        /// <param name="filesAlloc">Data to be written</param>
+        /// <param name="nextFileOffset">Offset to write the data to</param>
+        /// <param name="fat">The raw file allocation table. This will be updated as files are written</param>
+        /// <returns>The updated next file offset</returns>
+        private async Task<int> WriteFATFiles(IWriteOnlyBinaryDataAccessor data, ConcurrentDictionary<int, byte[]> filesAlloc, int fileIdStart, int nextFileOffset, List<byte> fat)
         {
-            get
+            for (int i = fileIdStart; i <= filesAlloc.Keys.Max(); i += 1)
             {
-                return _totalFileCount;
-            }
-            set
-            {
-                if (_totalFileCount != value)
+                if (filesAlloc.ContainsKey(i))
                 {
-                    _totalFileCount = value;
-                    ReportProgressChanged();
-                }
-            }
-        }
-        private int _totalFileCount;
+                    var fileData = filesAlloc[i];
 
-        /// <summary>
-        /// A percentage representing the progress of the current extraction operation
-        /// </summary>
-        public float Progress => (float)ExtractedFileCount / TotalFileCount;
+                    await data.WriteAsync(nextFileOffset, fileData); // Write data
+                    var paddingLength = await WritePadding(data, nextFileOffset + fileData.Length, fileData.Length);
 
-        /// <summary>
-        /// A string representing what is being done in the current extraction operation
-        /// </summary>
-        public string Message
-        {
-            get
-            {
-                if (IsCompleted)
-                {
-                    return Properties.Resources.Complete;
+                    fat.AddRange(BitConverter.GetBytes(nextFileOffset)); // File start index
+                    fat.AddRange(BitConverter.GetBytes(nextFileOffset + fileData.Length)); // File end index
+                    nextFileOffset += fileData.Length + paddingLength;
                 }
                 else
                 {
-                    return Properties.Resources.LoadingUnpacking;
+                    fat.AddRange(Enumerable.Repeat<byte>(0, 8));
                 }
             }
+            return nextFileOffset;
         }
 
-        /// <summary>
-        /// Whether or not the progress of the current extraction operation can be determined
-        /// </summary>
-        bool IReportProgress.IsIndeterminate => false;
-
-        /// <summary>
-        /// Whether or not the current extraction operation is complete
-        /// </summary>
-        public bool IsCompleted
-        {
-            get
+        public virtual void Dispose()
+        {            
+            if (disposeData && RawData is IDisposable rawDataDisposable)
             {
-                return _isCompleted;
+                rawDataDisposable.Dispose();
             }
-            set
+            if (disposeVirtualPath)
             {
-                _isCompleted = value;
-                if (_isCompleted)
-                {
-                    Completed?.Invoke(this, new EventArgs());
-                }
+                FileSystem.Dispose();
             }
         }
-        private bool _isCompleted;
-
-        #endregion
-
-        #region IFileSystem Implementation
-        /// <summary>
-        /// Keeps track of files that have been logically deleted
-        /// </summary>
-        private List<string> BlacklistedPaths => new List<string>();
-
-        string IFileSystem.WorkingDirectory
-        {
-            get
-            {
-                var path = new StringBuilder();
-                foreach (var item in _workingDirectoryParts)
-                {
-                    if (!string.IsNullOrEmpty(item))
-                    {
-                        path.Append("/");
-                        path.Append(item);
-                    }
-                }
-                path.Append("/");
-                return path.ToString();
-            }
-            set
-            {
-                _workingDirectoryParts = GetPathParts(value);
-            }
-        }
-        
-        private string[] _workingDirectoryParts;
-
-        protected string[] GetPathParts(string path)
-        {
-            var parts = new List<string>();
-
-            path = path.Replace('\\', '/');
-            if (!path.StartsWith("/") && !(_workingDirectoryParts.Length == 1 && _workingDirectoryParts[0] == string.Empty))
-            {
-                parts.AddRange(_workingDirectoryParts);
-            }
-
-            foreach (var item in path.TrimStart('/').Split('/'))
-            {
-                switch (item)
-                {
-                    case "":
-                    case ".":
-                        break;
-                    case "..":
-                        parts.RemoveAt(parts.Count - 1);
-                        break;
-                    default:
-                        parts.Add(item);
-                        break;
-                }
-            }
-            if (parts.Count == 0)
-            {
-                parts.Add(string.Empty);
-            }
-            return parts.ToArray();
-        }
-
-        void IFileSystem.ResetWorkingDirectory()
-        {
-            (this as IFileSystem).WorkingDirectory = "/";
-        }
-
-        private string FixPath(string path)
-        {
-            var fixedPath = path.Replace('\\', '/');
-
-            // Apply working directory
-            if (fixedPath.StartsWith("/"))
-            {
-                return fixedPath;
-            }
-            else
-            {
-                return Path.Combine((this as IFileSystem).WorkingDirectory, path);
-            }
-        }
-
-        private string GetVirtualPath(string path)
-        {
-            return Path.Combine(VirtualPath, path.TrimStart('/'));
-        }
-
-        private FileAllocationEntry? GetFATEntry(string path, bool throwIfNotFound = true)
-        {
-            var parts = GetPathParts(path);
-            var partLower = parts[0].ToLower();
-            switch (partLower)
-            {
-                case "overlay":
-                    int index;
-                    if (int.TryParse(parts[1].ToLower().Substring(8, 4), out index))
-                    {
-                        OverlayTableEntry entry = Arm9OverlayTable.FirstOrDefault(x => x.FileID == index);
-                        if (entry != default(OverlayTableEntry))
-                        {
-                            return FAT[entry.FileID];                            
-                        }
-                        else
-                        {
-                            throw new FileNotFoundException(string.Format(Properties.Resources.ErrorRomFileNotFound, path), path);
-                        }                        
-                    }
-                    break;
-                case "overlay7":
-                    int index7;
-                    if (int.TryParse(parts[1].ToLower().Substring(8, 4), out index7))
-                    {
-                        OverlayTableEntry entry = Arm7OverlayTable.FirstOrDefault(x => x.FileID == index7);
-                        if (entry != default(OverlayTableEntry))
-                        {
-                            return FAT[entry.FileID];
-                        }
-                        else
-                        {
-                            throw new FileNotFoundException(string.Format(Properties.Resources.ErrorRomFileNotFound, path), path);
-                        }
-                    }
-                    break;
-                case "arm7.bin":
-                    return new FileAllocationEntry(Header.Arm7RomOffset, Header.Arm7RomOffset + Header.Arm7Size);
-                case "arm9.bin":
-                    if (CheckNeedsArm9Footer())
-                    {
-                        return new FileAllocationEntry(Header.Arm9RomOffset, Header.Arm9RomOffset + Header.Arm9Size + 0xC);
-                    }
-                    else
-                    {
-                        return new FileAllocationEntry(Header.Arm9RomOffset, Header.Arm9RomOffset + Header.Arm9Size + 0xC);
-                    }
-                case "header.bin":
-                    return new FileAllocationEntry(0, 0x200);
-                case "banner.bin":
-                    return new FileAllocationEntry(Header.IconOffset, Header.IconOffset + Header.IconLength);
-                case "y7.bin":
-                    return new FileAllocationEntry(Header.FileArm7OverlayOffset, Header.FileArm7OverlayOffset + Header.FileArm7OverlaySize);
-                case "y9.bin":
-                    return new FileAllocationEntry(Header.FileArm9OverlayOffset, Header.FileArm9OverlayOffset + Header.FileArm9OverlaySize);
-                default:
-                    if (partLower == DataPath)
-                    {
-                        var currentEntry = FNT;
-                        for (int i = 1; i < parts.Length; i += 1)
-                        {
-                            currentEntry = currentEntry?.Children.Where(x => x.Name.ToLower() == parts[i].ToLower()).FirstOrDefault();
-                        }
-                        if (currentEntry != null && !currentEntry.IsDirectory)
-                        {
-                            return FAT[currentEntry.FileIndex];
-                        }
-                    }
-                    break;
-            }
-
-            // Default
-            if (throwIfNotFound)
-            {
-                throw new FileNotFoundException(string.Format(Properties.Resources.ErrorRomFileNotFound, path), path);
-            }
-            else
-            {
-                return null;
-            }
-        }
-
-        long IFileSystem.GetFileLength(string filename)
-        {
-            return GetFATEntry(filename).Value.Length;
-        }
-
-        bool IFileSystem.FileExists(string filename)
-        {
-            return (CurrentFileSystem != null && CurrentFileSystem.FileExists(GetVirtualPath(filename)))
-                || GetFATEntry(filename, false).HasValue;
-        }
-
-        private bool DirectoryExists(string[] parts)
-        {
-            if (parts.Length == 1)
-            {
-                switch (parts[0].ToLower())
-                {
-                    case "overlay":
-                        return true;
-                    case "overlay7":
-                        return true;
-                    default:
-                        return parts[0].ToLower() == DataPath;
-                }
-            }
-            else if (parts.Length == 0)
-            {
-                throw new ArgumentException("Argument cannot be empty", nameof(parts));
-            }
-            else
-            {
-                if (parts[0].ToLower() == DataPath)
-                {
-                    var currentEntry = FNT;
-                    for (int i = 1; i < parts.Length; i += 1)
-                    {
-                        var currentPartLower = parts[i].ToLower();
-                        currentEntry = currentEntry?.Children.Where(x => x.Name.ToLower() == currentPartLower).FirstOrDefault();
-                    }
-                    return (currentEntry?.IsDirectory).HasValue;
-                }
-                else
-                {
-                    return false;
-                }
-            }
-        }
-
-        bool IFileSystem.DirectoryExists(string path)
-        {
-            return !BlacklistedPaths.Contains(FixPath(path))
-                    &&
-                    ((CurrentFileSystem != null && CurrentFileSystem.DirectoryExists(GetVirtualPath(path)))
-                        || DirectoryExists(GetPathParts(path))
-                    );
-        }
-
-        void IFileSystem.CreateDirectory(string path)
-        {
-            var fixedPath = FixPath(path);
-            if (BlacklistedPaths.Contains(fixedPath))
-            {
-                BlacklistedPaths.Remove(fixedPath);
-            }
-
-            if (!(this as IFileSystem).DirectoryExists(fixedPath))
-            {
-                CurrentFileSystem?.CreateDirectory(GetVirtualPath(fixedPath));
-            }
-        }
-
-        private IEnumerable<string> GetFilesFromNode(string pathBase, FilenameTable currentTable, Regex searchPatternRegex, bool topDirectoryOnly)
-        {
-            var output = new List<string>();
-            foreach (var item in currentTable.Children.Where(x => !x.IsDirectory))
-            {
-                if (searchPatternRegex.IsMatch(item.Name))
-                {
-                    output.Add(pathBase + "/" + item.Name);
-                }
-            }
-            if (!topDirectoryOnly)
-            {
-                foreach (var item in currentTable.Children.Where(x => x.IsDirectory))
-                {
-                    output.AddRange(GetFilesFromNode(pathBase + "/" + item.Name, item, searchPatternRegex, topDirectoryOnly));
-                }
-            }
-            return output;
-        }
-
-        string[] IFileSystem.GetFiles(string path, string searchPattern, bool topDirectoryOnly)
-        {
-            var output = new List<string>();
-            var parts = GetPathParts(path);
-            var searchPatternRegex = new Regex(GetFileSearchRegex(searchPattern), RegexOptions.Compiled | RegexOptions.IgnoreCase);
-            switch (parts[0].ToLower())
-            {
-                case "":
-                    output.Add("/arm7.bin");
-                    output.Add("/arm9.bin");
-                    output.Add("/header.bin");
-                    output.Add("/banner.bin");
-                    output.Add("/y7.bin");
-                    output.Add("/y9.bin");
-                    if (!topDirectoryOnly)
-                    {
-                        output.AddRange((this as IFileSystem).GetFiles("/overlay", searchPattern, topDirectoryOnly));
-                        output.AddRange((this as IFileSystem).GetFiles("/overlay7", searchPattern, topDirectoryOnly));
-                        output.AddRange((this as IFileSystem).GetFiles("/" + DataPath, searchPattern, topDirectoryOnly));
-                    }
-                    return output.ToArray();
-                case "overlay":
-                    // Original files
-                    for (int i = 0; i < Arm9OverlayTable.Count; i += 1)
-                    {
-                        var overlayPath = $"/overlay/overlay_{Arm9OverlayTable[i].FileID.ToString().PadLeft(4, '0')}.bin";
-                        if (searchPatternRegex.IsMatch(Path.GetFileName(overlayPath)))
-                        {
-                            if (!BlacklistedPaths.Contains(overlayPath))
-                            {
-                                output.Add(overlayPath);
-                            }
-                        }
-                    }
-
-                    // Apply shadowed files
-                    var virtualPath = GetVirtualPath(parts[0].ToLower());
-                    if (CurrentFileSystem != null && CurrentFileSystem.DirectoryExists(virtualPath))
-                    {
-                        foreach (var item in CurrentFileSystem.GetFiles(virtualPath, "overlay_*.bin", true))
-                        {
-                            if (searchPatternRegex.IsMatch(Path.GetFileName(item)))
-                            {
-                                var overlayPath = "/" + FileSystem.MakeRelativePath(item, VirtualPath);
-                                if (!BlacklistedPaths.Contains(overlayPath) && !output.Contains(overlayPath))
-                                {
-                                    output.Add(overlayPath);
-                                }
-                            }
-                        }
-                    }
-                    return output.ToArray();
-                case "overlay7":
-                    // Original files
-                    for (int i = 0; i < Arm7OverlayTable.Count; i += 1)
-                    {
-                        var overlayPath = $"/overlay7/overlay_{Arm7OverlayTable[i].FileID.ToString().PadLeft(4, '0')}.bin";
-                        if (searchPatternRegex.IsMatch(Path.GetFileName(overlayPath)))
-                        {
-                            if (!BlacklistedPaths.Contains(overlayPath))
-                            {
-                                output.Add(overlayPath);
-                            }
-                        }
-                    }
-
-                    // Apply shadowed files
-                    var virtualPath7 = GetVirtualPath(parts[0].ToLower());
-                    if (CurrentFileSystem != null && CurrentFileSystem.DirectoryExists(virtualPath7))
-                    {
-                        foreach (var item in CurrentFileSystem.GetFiles(virtualPath7, "overlay_*.bin", true))
-                        {
-                            if (searchPatternRegex.IsMatch(Path.GetFileName(item)))
-                            {
-                                var overlayPath = "/" + FileSystem.MakeRelativePath(item, VirtualPath);
-                                if (!BlacklistedPaths.Contains(overlayPath) && !output.Contains(overlayPath))
-                                {
-                                    output.Add(overlayPath);
-                                }
-                            }
-                        }
-                    }
-                    return output.ToArray();
-                default:
-                    if (parts[0].ToLower() == DataPath)
-                    {
-                        // Get the desired directory
-                        var currentEntry = FNT;
-                        var pathBase = new StringBuilder();
-                        pathBase.Append("/" + DataPath);
-                        for (int i = 1; i < parts.Length; i += 1)
-                        {
-                            var partLower = parts[i].ToLower();
-                            currentEntry = currentEntry?.Children.Where(x => x.Name.ToLower() == partLower && x.IsDirectory).FirstOrDefault();
-                            if (currentEntry == null)
-                            {
-                                break;
-                            }
-                            else
-                            {
-                                pathBase.Append($"/{currentEntry.Name}");
-                            }
-                        }
-
-                        // Get the files
-                        if (currentEntry != null && currentEntry.IsDirectory)
-                        {
-                            output.AddRange(GetFilesFromNode(pathBase.ToString(), currentEntry, searchPatternRegex, topDirectoryOnly));
-                        }
-
-                        // Apply shadowed files
-                        var virtualPathData = GetVirtualPath(path);
-                        if (CurrentFileSystem != null && CurrentFileSystem.DirectoryExists(virtualPathData))
-                        {
-                            foreach (var item in CurrentFileSystem.GetFiles(virtualPathData, searchPattern, topDirectoryOnly))
-                            {
-                                var filePath = "/" + FileSystem.MakeRelativePath(item, VirtualPath);
-                                if (!output.Contains(filePath))
-                                {
-                                    output.Add(filePath);
-                                }
-                            }
-                        }
-                    }
-                    else
-                    {
-                        throw new FileNotFoundException(string.Format(Properties.Resources.ErrorRomFileNotFound, path), path);
-                    }
-                    break;
-            }
-            return output.ToArray();
-        }
-
-        string[] IFileSystem.GetDirectories(string path, bool topDirectoryOnly)
-        {
-            var output = new List<string>();
-            var parts = GetPathParts(path);
-            switch (parts[0].ToLower())
-            {
-                case "":
-                    output.Add("/" + DataPath);
-                    output.Add("/overlay");
-                    output.Add("/overlay7");
-                    break;
-                case "overlay":
-                case "overlay7":
-                    // Overlays have no child directories
-                    break;
-                default:
-                    if (parts[0].ToLower() == DataPath)
-                    {
-                        var currentEntry = FNT;
-                        for (int i = 1; i < parts.Length; i += 1)
-                        {
-                            var partLower = parts[i].ToLower();
-                            currentEntry = currentEntry?.Children.Where(x => x.Name.ToLower() == partLower && x.IsDirectory).FirstOrDefault();
-                        }
-
-                        if (currentEntry != null && currentEntry.IsDirectory)
-                        {
-                            output.AddRange(currentEntry.Children.Where(x => x.IsDirectory).Select(x => path + "/" + x.Name));
-                        }
-
-                        // Apply shadowed files
-                        var virtualPathData = GetVirtualPath(path);
-                        if (CurrentFileSystem != null && CurrentFileSystem.DirectoryExists(virtualPathData))
-                        {
-                            foreach (var item in CurrentFileSystem.GetDirectories(virtualPathData, topDirectoryOnly))
-                            {
-                                var filePath = "/" + FileSystem.MakeRelativePath(item, VirtualPath);
-                                if (!output.Contains(filePath))
-                                {
-                                    output.Add(filePath);
-                                }
-                            }
-                        }
-                    }
-                    else
-                    {
-                        throw new FileNotFoundException(string.Format(Properties.Resources.ErrorRomFileNotFound, path), path);
-                    }
-                    break;
-            }
-            if (!topDirectoryOnly)
-            {
-                foreach (var item in output)
-                {
-                    output.AddRange((this as IFileSystem).GetDirectories(item, topDirectoryOnly));
-                }
-            }
-            return output.ToArray();
-        }
-
-        byte[] IFileSystem.ReadAllBytes(string filename)
-        {
-            var fixedPath = FixPath(filename);
-            if (BlacklistedPaths.Contains(fixedPath))
-            {
-                throw new FileNotFoundException(string.Format(Properties.Resources.ErrorRomFileNotFound, filename), filename);
-            }
-            else
-            {
-                var virtualPath = GetVirtualPath(fixedPath);
-                if (CurrentFileSystem != null && CurrentFileSystem.FileExists(virtualPath))
-                {
-                    return CurrentFileSystem.ReadAllBytes(virtualPath);
-                }
-                else
-                {
-                    var entry = GetFATEntry(filename);
-                    return RawData.Read(entry.Value.Offset, entry.Value.Length);
-                }
-            }
-        }
-
-        string IFileSystem.ReadAllText(string filename)
-        {
-            return Encoding.UTF8.GetString((this as IFileSystem).ReadAllBytes(filename));
-        }
-
-        void IFileSystem.WriteAllBytes(string filename, byte[] data)
-        {
-            var fixedPath = FixPath(filename);
-            if (BlacklistedPaths.Contains(fixedPath))
-            {
-                BlacklistedPaths.Remove(fixedPath);
-            }
-
-            CurrentFileSystem?.WriteAllBytes(GetVirtualPath(filename), data);
-        }
-
-        void IFileSystem.WriteAllText(string filename, string data)
-        {
-            (this as IFileSystem).WriteAllBytes(filename, Encoding.UTF8.GetBytes(data));
-        }
-
-        void IFileSystem.CopyFile(string sourceFilename, string destinationFilename)
-        {
-            (this as IFileSystem).WriteAllBytes(destinationFilename, (this as IFileSystem).ReadAllBytes(sourceFilename));
-        }
-
-        void IFileSystem.DeleteFile(string filename)
-        {
-            var fixedPath = FixPath(filename);
-            if (!BlacklistedPaths.Contains(fixedPath))
-            {
-                BlacklistedPaths.Add(fixedPath);
-            }
-
-            var virtualPath = GetVirtualPath(filename);
-            if (CurrentFileSystem != null && CurrentFileSystem.FileExists(virtualPath))
-            {
-                CurrentFileSystem.DeleteFile(virtualPath);
-            }
-        }
-
-        void IFileSystem.DeleteDirectory(string path)
-        {
-            var fixedPath = FixPath(path);
-            if (!BlacklistedPaths.Contains(fixedPath))
-            {
-                BlacklistedPaths.Add(fixedPath);
-            }
-
-            var virtualPath = GetVirtualPath(path);
-            if (CurrentFileSystem != null && CurrentFileSystem.FileExists(virtualPath))
-            {
-                CurrentFileSystem.DeleteFile(virtualPath);
-            }
-        }
-
-        string IFileSystem.GetTempFilename()
-        {
-            var path = "/temp/files/" + Guid.NewGuid().ToString();
-            (this as IFileSystem).WriteAllBytes(path, new byte[] { });
-            return path;
-        }
-
-        string IFileSystem.GetTempDirectory()
-        {
-            var path = "/temp/dirs/" + Guid.NewGuid().ToString();
-            (this as IFileSystem).CreateDirectory(path);
-            return path;
-        }
-
-        Stream IFileSystem.OpenFile(string filename)
-        {
-            if (CurrentFileSystem != null)
-            {
-                throw new NotSupportedException("Cannot open a file as a stream without an IO provider.");
-            }
-
-            var virtualPath = GetVirtualPath(filename);
-            if (!CurrentFileSystem.DirectoryExists(virtualPath))
-            {
-                CurrentFileSystem.CreateDirectory(virtualPath);
-            }
-            CurrentFileSystem.WriteAllBytes(virtualPath, (this as IFileSystem).ReadAllBytes(filename));
-
-            return CurrentFileSystem.OpenFile(filename);
-        }
-
-        Stream IFileSystem.OpenFileReadOnly(string filename)
-        {
-            if (CurrentFileSystem != null)
-            {
-                throw new NotSupportedException("Cannot open a file as a stream without an IO provider.");
-            }
-
-            var virtualPath = GetVirtualPath(filename);
-            if (!CurrentFileSystem.DirectoryExists(virtualPath))
-            {
-                CurrentFileSystem.CreateDirectory(virtualPath);
-            }
-            CurrentFileSystem.WriteAllBytes(virtualPath, (this as IFileSystem).ReadAllBytes(filename));
-
-            return CurrentFileSystem.OpenFileReadOnly(filename);
-        }
-
-        Stream IFileSystem.OpenFileWriteOnly(string filename)
-        {
-            if (CurrentFileSystem != null)
-            {
-                throw new NotSupportedException("Cannot open a file as a stream without an IO provider.");
-            }
-
-            var virtualPath = GetVirtualPath(filename);
-            if (!CurrentFileSystem.DirectoryExists(virtualPath))
-            {
-                CurrentFileSystem.CreateDirectory(virtualPath);
-            }
-            CurrentFileSystem.WriteAllBytes(virtualPath, (this as IFileSystem).ReadAllBytes(filename));
-
-            return CurrentFileSystem.OpenFileWriteOnly(filename);
-        }
-        #endregion
-
-        #region IDisposable Implementation
-
-        public void Dispose()
-        {
-            RawData.Dispose();
-
-            if (!string.IsNullOrEmpty(VirtualPath) && CurrentFileSystem.DirectoryExists(VirtualPath) && DisposeVirtualPath)
-            {
-                CurrentFileSystem.DeleteDirectory(VirtualPath);
-                VirtualPath = null;
-            }
-        }
-
-        #endregion
     }
 }

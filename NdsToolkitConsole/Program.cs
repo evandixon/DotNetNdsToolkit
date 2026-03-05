@@ -1,8 +1,7 @@
 ﻿using DotNetNdsToolkit;
-using SkyEditor.Core.IO;
-using SkyEditor.IO.FileSystem;
 using System;
 using System.IO;
+using System.Threading.Tasks;
 
 namespace NdsToolkitConsole
 {
@@ -13,7 +12,7 @@ namespace NdsToolkitConsole
             Console.WriteLine("Usage: NdsToolkitConsole <Input> <Output> [--datapath [data]]");
             Console.WriteLine("Input can be a file or a directory, as long as the output is the other");
         }
-        static void Main(string[] args)
+        static async Task Main(string[] args)
         {
             if (args.Length < 2)
             {
@@ -48,24 +47,20 @@ namespace NdsToolkitConsole
                 }
             }
 
-            using (var file = new NdsRom())
+            using var file = await NdsRom.LoadFromFile(filename);
+            if (!string.IsNullOrEmpty(dataOverride))
             {
-                if (!string.IsNullOrEmpty(dataOverride))
-                {
-                    file.DataPath = dataOverride;
-                }
+                file.FileSystem.DataPath = dataOverride;
+            }
 
-                file.OpenFile(filename, new PhysicalFileSystem()).Wait();
-                
-                if (File.Exists(filename))
-                {
-                    file.Unpack(dir, new PhysicalFileSystem()).Wait();
-                }
-                else if (Directory.Exists(filename))
-                {
-                    file.Save(dir, new PhysicalFileSystem()).Wait();
-                }
-            }                     
+            if (File.Exists(filename))
+            {
+                await file.Unpack(dir);
+            }
+            else if (Directory.Exists(filename))
+            {
+                await file.Save(dir);
+            }
         }
     }
 }

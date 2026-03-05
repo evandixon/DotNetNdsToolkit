@@ -1,9 +1,6 @@
-﻿using Microsoft.VisualStudio.TestTools.UnitTesting;
-using SkyEditor.Core.IO;
+﻿using DotNetNdsToolkit.Subtypes;
+using Microsoft.VisualStudio.TestTools.UnitTesting;
 using SkyEditor.IO.FileSystem;
-using System;
-using System.Collections.Generic;
-using System.Text;
 
 namespace DotNetNdsToolkit.Tests
 {
@@ -12,8 +9,13 @@ namespace DotNetNdsToolkit.Tests
     {
         public const string TestCategory = "NDS ROM (Internal)";
 
-        public class TestNdsRom : NdsRom
+        public class TestNdsRomFileSystem : NdsFileSystem
         {
+            public TestNdsRomFileSystem() 
+                : base(NdsRom.LoadFromDirectory("/", new InMemoryFileSystem()), "/", new InMemoryFileSystem(), false)
+            {
+            }
+
             public new string[] GetPathParts(string path)
             {
                 return base.GetPathParts(path);
@@ -24,7 +26,7 @@ namespace DotNetNdsToolkit.Tests
         [TestCategory(TestCategory)]
         public void GetPathParts_Root()
         {
-            var testRom = new TestNdsRom();
+            var testRom = new TestNdsRomFileSystem();
             var parts = testRom.GetPathParts("/");
             Assert.AreEqual(1, parts.Length);
             Assert.AreEqual("", parts[0]);
@@ -34,7 +36,7 @@ namespace DotNetNdsToolkit.Tests
         [TestCategory(TestCategory)]
         public void GetPathParts_OverlayX_Absolute()
         {
-            var testRom = new TestNdsRom();
+            var testRom = new TestNdsRomFileSystem();
             var parts = testRom.GetPathParts("/overlay/overlay_0000.bin");
             Assert.AreEqual(2, parts.Length);
             Assert.AreEqual("overlay", parts[0]);
@@ -45,7 +47,7 @@ namespace DotNetNdsToolkit.Tests
         [TestCategory(TestCategory)]
         public void GetPathParts_OverlayX_RelativeToRoot()
         {
-            var testRom = new TestNdsRom();
+            var testRom = new TestNdsRomFileSystem();
             var parts = testRom.GetPathParts("overlay/overlay_0000.bin");
             Assert.AreEqual(2, parts.Length);
             Assert.AreEqual("overlay", parts[0]);
@@ -56,7 +58,7 @@ namespace DotNetNdsToolkit.Tests
         [TestCategory(TestCategory)]
         public void GetPathParts_OverlayX_RelativeToOverlay()
         {
-            var testRom = new TestNdsRom();
+            var testRom = new TestNdsRomFileSystem();
             (testRom as IFileSystem).WorkingDirectory = "/overlay";
             var parts = testRom.GetPathParts("overlay_0000.bin");
             Assert.AreEqual(2, parts.Length);
