@@ -1,4 +1,7 @@
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using SkyEditor.IO.Binary;
+using SkyEditor.IO.FileSystem;
+using SkyEditor.Utilities.AsyncFor;
 using System;
 using System.Collections.Concurrent;
 using System.IO;

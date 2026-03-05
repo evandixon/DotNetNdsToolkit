@@ -1,6 +1,8 @@
-﻿using SkyEditor.NdsToolkit;
+﻿using SkyEditor.IO.FileSystem;
+using SkyEditor.NdsToolkit;
 using System;
 using System.IO;
+using System.IO.Compression;
 using System.Threading.Tasks;
 
 namespace NdsToolkitConsole

@@ -1,4 +1,5 @@
 ﻿using Microsoft.VisualStudio.TestTools.UnitTesting;
+using SkyEditor.IO.FileSystem;
 using SkyEditor.NdsToolkit.Subtypes;
 
 namespace SkyEditor.NdsToolkit.Tests
