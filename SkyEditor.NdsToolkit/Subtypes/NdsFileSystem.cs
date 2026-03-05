@@ -357,7 +357,7 @@ namespace SkyEditor.NdsToolkit.Subtypes
                         {
                             if (searchPatternRegex.IsMatch(Path.GetFileName(item)))
                             {
-                                var overlayPath = "/" + Path.GetRelativePath(item, this.virtualPath);
+                                var overlayPath = "/" + GetRelativePath(item, this.virtualPath);
                                 if (!BlacklistedPaths.Contains(overlayPath) && !output.Contains(overlayPath))
                                 {
                                     output.Add(overlayPath);
@@ -388,7 +388,7 @@ namespace SkyEditor.NdsToolkit.Subtypes
                         {
                             if (searchPatternRegex.IsMatch(Path.GetFileName(item)))
                             {
-                                var overlayPath = "/" + Path.GetRelativePath(item, this.virtualPath);
+                                var overlayPath = "/" + GetRelativePath(item, this.virtualPath);
                                 if (!BlacklistedPaths.Contains(overlayPath) && !output.Contains(overlayPath))
                                 {
                                     output.Add(overlayPath);
@@ -430,7 +430,7 @@ namespace SkyEditor.NdsToolkit.Subtypes
                         {
                             foreach (var item in virtualFileSystem.GetFiles(virtualPathData, searchPattern, topDirectoryOnly))
                             {
-                                var filePath = "/" + Path.GetRelativePath(virtualPath, item);
+                                var filePath = "/" + GetRelativePath(virtualPath, item);
                                 if (!output.Contains(filePath))
                                 {
                                     output.Add(filePath);
@@ -483,7 +483,7 @@ namespace SkyEditor.NdsToolkit.Subtypes
                         {
                             foreach (var item in virtualFileSystem.GetDirectories(virtualPathData, topDirectoryOnly))
                             {
-                                var filePath = "/" + Path.GetRelativePath(virtualPath, item);
+                                var filePath = "/" + GetRelativePath(virtualPath, item);
                                 if (!output.Contains(filePath))
                                 {
                                     output.Add(filePath);
@@ -609,7 +609,12 @@ namespace SkyEditor.NdsToolkit.Subtypes
                     throw new InvalidOperationException("ROM must be loaded from file to read a FAT entry");
                 }
                 var data = rom.RawData.ReadArray(entry.Value.Offset, entry.Value.Length);
+
+#if NET10_0_OR_GREATER
                 file.Write(data);
+#else
+                file.Write(data, 0, data.Length);
+#endif
                 file.Position = 0;
             }
 
@@ -657,7 +662,11 @@ namespace SkyEditor.NdsToolkit.Subtypes
                     throw new InvalidOperationException("ROM must be loaded from file to read a FAT entry");
                 }
                 var data = rom.RawData.ReadArray(entry.Value.Offset, entry.Value.Length);
+#if NET10_0_OR_GREATER
                 file.Write(data);
+#else
+                file.Write(data, 0, data.Length);
+#endif
                 file.Position = 0;
             }
 
@@ -706,6 +715,23 @@ namespace SkyEditor.NdsToolkit.Subtypes
             }
 
             return regexString.ToString();
+        }
+
+        private static string GetRelativePath(string relativeTo, string path)
+        {
+#if NET10_0_OR_GREATER
+            return Path.GetRelativePath(relativeTo, path);
+#else
+            relativeTo = Path.GetFullPath(relativeTo);
+            path = Path.GetFullPath(path);
+            var fromUri = new Uri(relativeTo.EndsWith(Path.DirectorySeparatorChar.ToString())
+                ? relativeTo
+                : relativeTo + Path.DirectorySeparatorChar);
+            var toUri = new Uri(path);
+            var relativeUri = fromUri.MakeRelativeUri(toUri);
+            return Uri.UnescapeDataString(relativeUri.ToString())
+                .Replace('/', Path.DirectorySeparatorChar);
+#endif
         }
 
         public virtual void Dispose()

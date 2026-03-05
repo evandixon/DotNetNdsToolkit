@@ -869,7 +869,14 @@ namespace SkyEditor.NdsToolkit
         {
             var paddingLength = CalculatePaddingSize(fileLength, blockSize);
             var padding = new byte[paddingLength];
+#if NET10_0_OR_GREATER
             Array.Fill<byte>(padding, 0xFF);
+#else
+            for (int i = 0; i < paddingLength; i++)
+            {
+                padding[i] = 0xFF;
+            }
+#endif
             await data.WriteAsync(index, padding);
             return paddingLength;
         }

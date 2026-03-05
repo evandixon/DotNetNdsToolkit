@@ -47,8 +47,9 @@ jobs:
         name: nuget
         path: nuget
 
-    - name: Test
-      run: dotnet test --no-build --verbosity normal -c Release
+    # Tests require real ROMs which aren't available without a custom build agent, not yet available
+    #- name: Test
+    #  run: dotnet test --no-build --verbosity normal -c Release
         
   publish-nuget:
     needs: build
